@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     DASHSCOPE_API_KEY: str = ""
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # OAuth - 微信开放平台
+    WECHAT_APP_ID: str = ""
+    WECHAT_APP_SECRET: str = ""
+    WECHAT_REDIRECT_URI: str = ""
+
+    # OAuth - 支付宝开放平台
+    ALIPAY_APP_ID: str = ""
+    ALIPAY_REDIRECT_URI: str = ""
+
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
     AUDIO_DIR: Path = BASE_DIR / "data" / "audio"

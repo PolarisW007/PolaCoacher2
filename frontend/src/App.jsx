@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from './store/AuthContext';
 import MainLayout from './layouts/MainLayout';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
+import OAuthCallbackPage from './pages/auth/OAuthCallbackPage';
 import BookshelfPage from './pages/bookshelf/BookshelfPage';
 import CommunityPage from './pages/community/CommunityPage';
 import CommunityDetailPage from './pages/community/CommunityDetailPage';
@@ -24,6 +25,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/oauth/callback" element={<OAuthCallbackPage />} />
       <Route element={<MainLayout />}>
         <Route
           path="/"

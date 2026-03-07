@@ -1,14 +1,21 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { Card, Form, Input, Button, Typography, message, Divider } from 'antd';
-import { UserOutlined, LockOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
+import { Card, Form, Input, Button, Typography, message, Divider, Space, Modal } from 'antd';
+import {
+  UserOutlined,
+  LockOutlined,
+  WechatOutlined,
+  AlipayCircleOutlined,
+  QrcodeOutlined,
+} from '@ant-design/icons';
 import { authApi } from '../../api/auth';
 import { useAuth } from '../../store/AuthContext';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
+  const [qrModal, setQrModal] = useState({ open: false, type: '' });
   const navigate = useNavigate();
   const { login, fetchUser } = useAuth();
 
@@ -24,10 +31,27 @@ export default function LoginPage() {
       message.success('登录成功');
       navigate('/');
     } catch (err) {
-      message.error(err.message || '登录失败');
+      const errMsg = err.message || '登录失败';
+
+      if (errMsg.includes('尚未注册') || errMsg.includes('不存在')) {
+        Modal.confirm({
+          title: '账号未注册',
+          content: '该账号尚未注册，是否立即创建新账号？',
+          okText: '去注册',
+          cancelText: '取消',
+          onOk: () => navigate('/register'),
+        });
+      } else {
+        message.error(errMsg);
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleOAuth = (provider) => {
+    setQrModal({ open: true, type: provider });
+    window.open(`/api/auth/oauth/${provider}`, '_blank', 'width=600,height=700');
   };
 
   return (
@@ -98,6 +122,52 @@ export default function LoginPage() {
 
         <Divider plain>
           <Text type="secondary" style={{ fontSize: 12 }}>
+            快捷登录
+          </Text>
+        </Divider>
+
+        <Space
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            marginBottom: 24,
+          }}
+          size={24}
+        >
+          <Button
+            type="text"
+            icon={<WechatOutlined style={{ fontSize: 28, color: '#07c160' }} />}
+            onClick={() => handleOAuth('wechat')}
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 16,
+              border: '1px solid #f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            title="微信扫码登录"
+          />
+          <Button
+            type="text"
+            icon={<AlipayCircleOutlined style={{ fontSize: 28, color: '#1677ff' }} />}
+            onClick={() => handleOAuth('alipay')}
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 16,
+              border: '1px solid #f0f0f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            title="支付宝扫码登录"
+          />
+        </Space>
+
+        <Divider plain>
+          <Text type="secondary" style={{ fontSize: 12 }}>
             还没有账号？
           </Text>
         </Divider>
@@ -106,6 +176,47 @@ export default function LoginPage() {
           注册新账号
         </Button>
       </Card>
+
+      <Modal
+        open={qrModal.open}
+        title={
+          <Space>
+            <QrcodeOutlined />
+            {qrModal.type === 'wechat' ? '微信扫码登录' : '支付宝扫码登录'}
+          </Space>
+        }
+        footer={null}
+        onCancel={() => setQrModal({ open: false, type: '' })}
+        width={400}
+        centered
+      >
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <div
+            style={{
+              width: 200,
+              height: 200,
+              margin: '0 auto 16px',
+              background: '#fafafa',
+              borderRadius: 12,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '1px solid #f0f0f0',
+            }}
+          >
+            <QrcodeOutlined style={{ fontSize: 64, color: '#ccc' }} />
+          </div>
+          <Text type="secondary">
+            {qrModal.type === 'wechat'
+              ? '请使用微信扫描二维码登录'
+              : '请使用支付宝扫描二维码登录'}
+          </Text>
+          <br />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            扫码后将自动完成登录
+          </Text>
+        </div>
+      </Modal>
     </div>
   );
 }
