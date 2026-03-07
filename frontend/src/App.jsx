@@ -12,6 +12,8 @@ import CommunityPage from './pages/community/CommunityPage';
 import CommunityDetailPage from './pages/community/CommunityDetailPage';
 import NotificationsPage from './pages/NotificationsPage';
 import PlaceholderPage from './pages/PlaceholderPage';
+import DocumentReader from './pages/reader/DocumentReader';
+import DocumentPlayer from './pages/player/DocumentPlayer';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -53,7 +55,7 @@ function AppRoutes() {
           path="/reader/:id"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="文档阅读器" description="PDF 阅读、AI 摘要、笔记标注、AI 问答" />
+              <DocumentReader />
             </ProtectedRoute>
           }
         />
@@ -61,7 +63,7 @@ function AppRoutes() {
           path="/play/:id"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="讲解播放器" description="三栏布局、语音播放、双语对照、备注面板" />
+              <DocumentPlayer />
             </ProtectedRoute>
           }
         />

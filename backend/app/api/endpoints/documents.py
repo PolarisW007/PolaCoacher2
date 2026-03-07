@@ -22,7 +22,7 @@ from app.schemas.document import (
     GroupUpdateRequest,
     PublishRequest,
 )
-from app.services.doc_processor import process_document
+from app.services.doc_processor import generate_lecture_for_document, process_document
 
 router = APIRouter(prefix="/documents", tags=["文档"])
 
@@ -195,6 +195,39 @@ async def unpublish_lecture(
     doc.lecture_visibility = "private"
     doc.published_at = None
     return ApiResponse.ok(data=DocumentOut.model_validate(doc))
+
+
+@router.post("/{doc_id}/generate-lecture", response_model=ApiResponse)
+async def generate_lecture(
+    doc_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发讲解生成"""
+    doc = await _get_user_doc(doc_id, user.id, db)
+    if not doc.ppt_content:
+        raise HTTPException(status_code=400, detail="文档尚未完成AI处理，请先等待")
+    if doc.lecture_slides:
+        return ApiResponse.ok(msg="讲解已生成")
+
+    asyncio.create_task(generate_lecture_for_document(doc_id))
+    return ApiResponse.ok(msg="讲解生成已启动，请稍候")
+
+
+@router.get("/{doc_id}/file-url")
+async def get_file_url(
+    doc_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取文档文件的可访问 URL"""
+    doc = await _get_user_doc(doc_id, user.id, db)
+    filename = os.path.basename(doc.file_path)
+    return ApiResponse.ok(data={
+        "url": f"/uploads/{filename}",
+        "file_type": doc.file_type,
+        "filename": doc.filename,
+    })
 
 
 async def _get_user_doc(doc_id: int, user_id: int, db: AsyncSession) -> Document:

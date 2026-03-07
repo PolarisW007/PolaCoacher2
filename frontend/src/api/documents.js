@@ -15,6 +15,8 @@ export const docApi = {
   move: (id, groupId) => client.put(`/documents/${id}/move`, { group_id: groupId }),
   publish: (id, data) => client.post(`/documents/${id}/publish`, data),
   unpublish: (id) => client.post(`/documents/${id}/unpublish`),
+  generateLecture: (id) => client.post(`/documents/${id}/generate-lecture`),
+  getFileUrl: (id) => client.get(`/documents/${id}/file-url`),
 };
 
 export const groupApi = {
