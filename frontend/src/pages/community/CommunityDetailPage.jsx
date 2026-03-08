@@ -28,6 +28,7 @@ import {
 } from '@ant-design/icons';
 import { communityApi } from '../../api/community';
 import { useAuth } from '../../store/AuthContext';
+import LoginModal from '../../components/LoginModal';
 import dayjs from 'dayjs';
 
 const { Title, Text, Paragraph } = Typography;
@@ -56,6 +57,18 @@ function CommentItem({ comment, onReply, onDelete, currentUserId, docOwnerId }) 
             {comment.content}
           </Paragraph>
           <Space>
+            <Button
+              type="text"
+              size="small"
+              icon={<HeartOutlined />}
+              onClick={() => {
+                communityApi.likeComment(comment.id)
+                  .then(() => message.success('已点赞'))
+                  .catch((e) => message.error(e.message));
+              }}
+            >
+              {comment.like_count || 0}
+            </Button>
             <Button type="text" size="small" onClick={() => onReply(comment)}>
               回复
             </Button>
@@ -92,6 +105,15 @@ export default function CommunityDetailPage() {
   const [commentText, setCommentText] = useState('');
   const [replyTo, setReplyTo] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+
+  const requireLogin = (action) => {
+    if (!user) {
+      setLoginModalOpen(true);
+      return false;
+    }
+    return true;
+  };
 
   const fetchDetail = useCallback(async () => {
     try {
@@ -117,11 +139,7 @@ export default function CommunityDetailPage() {
 
   const handleSubmitComment = async () => {
     if (!commentText.trim()) return;
-    if (!user) {
-      message.warning('请先登录');
-      navigate('/login');
-      return;
-    }
+    if (!requireLogin()) return;
     setSubmitting(true);
     try {
       await communityApi.createComment(id, {
@@ -189,23 +207,60 @@ export default function CommunityDetailPage() {
           <Paragraph type="secondary">{doc.description}</Paragraph>
         )}
         <Space>
-          <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => navigate(`/play/${doc.id}`)}>
+          <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => navigate(`/study/${doc.id}`)}>
             播放讲解
           </Button>
           <Button icon={<HeartOutlined />} onClick={() => {
-            if (!user) { navigate('/login'); return; }
+            if (!requireLogin()) return;
             communityApi.like(id).then(() => { message.success('已点赞'); fetchDetail(); }).catch((e) => message.error(e.message));
           }}>
             点赞
           </Button>
           <Button icon={<StarOutlined />} onClick={() => {
-            if (!user) { navigate('/login'); return; }
+            if (!requireLogin()) return;
             communityApi.favorite(id).then(() => message.success('已收藏')).catch((e) => message.error(e.message));
           }}>
             收藏
           </Button>
         </Space>
       </Card>
+
+      {doc.lecture_slides?.length > 0 && (
+        <Card
+          title="讲解预览"
+          style={{ borderRadius: 12, marginBottom: 24 }}
+          extra={<Text type="secondary" style={{ fontSize: 12 }}>共 {doc.lecture_slides.length} 页</Text>}
+        >
+          {doc.lecture_slides.slice(0, 3).map((slide, idx) => (
+            <div key={idx} style={{ marginBottom: idx < 2 ? 16 : 0 }}>
+              <Space style={{ marginBottom: 4 }}>
+                <Tag color="blue">第 {slide.slide || idx + 1} 页</Tag>
+                <Text strong style={{ fontSize: 14 }}>{slide.title}</Text>
+              </Space>
+              {slide.points?.length > 0 && (
+                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                  {slide.points.slice(0, 3).map((p, pi) => (
+                    <li key={pi} style={{ fontSize: 13, lineHeight: 1.6, color: '#666' }}>{p}</li>
+                  ))}
+                </ul>
+              )}
+              {slide.lecture_text && (
+                <Paragraph ellipsis={{ rows: 2 }} type="secondary" style={{ fontSize: 13, marginTop: 4, marginBottom: 0 }}>
+                  {slide.lecture_text}
+                </Paragraph>
+              )}
+              {idx < 2 && <Divider style={{ margin: '12px 0 0' }} />}
+            </div>
+          ))}
+          {doc.lecture_slides.length > 3 && (
+            <div style={{ textAlign: 'center', marginTop: 12 }}>
+              <Button type="link" onClick={() => navigate(`/study/${doc.id}`)}>
+                查看完整讲解 →
+              </Button>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card title={`评论 (${comments.length})`} style={{ borderRadius: 12 }}>
         <div style={{ marginBottom: 24 }}>
@@ -253,6 +308,8 @@ export default function CommunityDetailPage() {
           ))
         )}
       </Card>
+
+      <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
     </div>
   );
 }

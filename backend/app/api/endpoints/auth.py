@@ -1,8 +1,11 @@
+import logging
+import random
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
@@ -15,7 +18,21 @@ from app.models.user import User
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserProfile
 from app.schemas.common import ApiResponse
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+_otp_store: dict[str, tuple[str, float]] = {}
+
+
+class OtpSendRequest(BaseModel):
+    phone: str | None = None
+    email: str | None = None
+
+
+class OtpLoginRequest(BaseModel):
+    account: str
+    otp: str
 
 
 @router.post("/register", response_model=ApiResponse[TokenResponse])
@@ -66,6 +83,48 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="密码错误，请重试",
         )
+
+    user.last_login = datetime.now(timezone.utc)
+    token = create_access_token({"sub": str(user.id)})
+    return ApiResponse.ok(data=TokenResponse(access_token=token))
+
+
+@router.post("/send-otp", response_model=ApiResponse)
+async def send_otp(req: OtpSendRequest):
+    account = req.phone or req.email
+    if not account:
+        raise HTTPException(status_code=400, detail="请提供手机号或邮箱")
+    import time
+    code = f"{random.randint(100000, 999999)}"
+    _otp_store[account] = (code, time.time() + 300)
+    logger.info(f"[OTP] {account} => {code} (开发环境直接打印，生产环境需接入短信/邮件服务)")
+    return ApiResponse.ok(msg="验证码已发送")
+
+
+@router.post("/login-otp", response_model=ApiResponse[TokenResponse])
+async def login_otp(req: OtpLoginRequest, db: AsyncSession = Depends(get_db)):
+    import time
+    stored = _otp_store.get(req.account)
+    if not stored or stored[0] != req.otp or stored[1] < time.time():
+        raise HTTPException(status_code=400, detail="验证码无效或已过期")
+    _otp_store.pop(req.account, None)
+
+    result = await db.execute(
+        select(User).where(
+            or_(User.phone == req.account, User.email == req.account)
+        )
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        username = f"user_{req.account[-4:]}{random.randint(100, 999)}"
+        user = User(
+            username=username,
+            phone=req.account if req.account.isdigit() else None,
+            email=req.account if "@" in req.account else None,
+            password_hash="",
+        )
+        db.add(user)
+        await db.flush()
 
     user.last_login = datetime.now(timezone.utc)
     token = create_access_token({"sub": str(user.id)})

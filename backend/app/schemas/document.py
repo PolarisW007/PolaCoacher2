@@ -3,6 +3,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.auth import UserProfile
+
+
+class OwnerBrief(BaseModel):
+    id: int
+    username: str
+    avatar_url: str | None = None
+
+    model_config = {"from_attributes": True}
+
 
 class DocumentOut(BaseModel):
     id: int
@@ -20,6 +30,7 @@ class DocumentOut(BaseModel):
     lecture_slides: Any = None
     status: str
     progress: float
+    processing_step: str | None = None
     cover_url: str | None = None
     lecture_visibility: str = "private"
     play_count: int = 0
@@ -33,8 +44,10 @@ class DocumentOut(BaseModel):
     publish_year: int | None = None
     language: str | None = None
     group_id: int | None = None
+    published_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    owner: OwnerBrief | None = None
 
     model_config = {"from_attributes": True}
 
@@ -66,3 +79,33 @@ class PublishRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     tags: list[str] | None = None
+
+
+class BatchOperationRequest(BaseModel):
+    doc_ids: list[int]
+    action: str  # delete | move_group
+    group_id: int | None = None
+
+
+class ImportUrlRequest(BaseModel):
+    url: str = Field(min_length=1)
+    title: str | None = None
+
+
+class BookSearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    language: str | None = None
+    format: str | None = None
+    page: int = 1
+
+
+class BookImportRequest(BaseModel):
+    title: str
+    author: str | None = None
+    isbn: str | None = None
+    download_url: str | None = None
+    cover_url: str | None = None  # 来自书籍搜索（如微信读书）的封面 URL
+    file_size: int = 0
+    publisher: str | None = None
+    publish_year: int | None = None
+    language: str | None = None

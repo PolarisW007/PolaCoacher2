@@ -9,9 +9,11 @@ import {
   Button,
   Space,
   Typography,
+  Breadcrumb,
 } from 'antd';
 import {
   BookOutlined,
+  FolderOutlined,
   GlobalOutlined,
   ShareAltOutlined,
   HistoryOutlined,
@@ -23,6 +25,7 @@ import {
   PlayCircleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  HomeOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../store/AuthContext';
 import { notificationApi } from '../api/community';
@@ -30,8 +33,20 @@ import { notificationApi } from '../api/community';
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
+const breadcrumbMap = {
+  '/': '书架',
+  '/documents': '文档库',
+  '/ai-lecture': 'AI 讲堂',
+  '/community': '社区',
+  '/share': '分享中心',
+  '/history': '历史记录',
+  '/settings': '设置',
+  '/notifications': '通知中心',
+};
+
 const menuItems = [
   { key: '/', icon: <BookOutlined />, label: '书架' },
+  { key: '/documents', icon: <FolderOutlined />, label: '文档库' },
   { key: '/ai-lecture', icon: <PlayCircleOutlined />, label: 'AI 讲堂' },
   { key: '/community', icon: <GlobalOutlined />, label: '社区' },
   { key: '/share', icon: <ShareAltOutlined />, label: '分享中心' },
@@ -55,6 +70,24 @@ export default function MainLayout() {
     }, 30000);
     return () => clearInterval(timer);
   }, [user]);
+
+  const getBreadcrumbItems = () => {
+    const path = location.pathname;
+    const items = [{ title: <span onClick={() => navigate('/')} style={{ cursor: 'pointer' }}><HomeOutlined /> 首页</span> }];
+
+    if (path.startsWith('/study/')) {
+      items.push({ title: '文档学习' });
+    } else if (path.startsWith('/reader/') || path.startsWith('/play/')) {
+      items.push({ title: '文档学习' });
+    } else if (path.startsWith('/community/') && path !== '/community') {
+      items.push({ title: <span onClick={() => navigate('/community')} style={{ cursor: 'pointer' }}>社区</span> });
+      items.push({ title: '讲解详情' });
+    } else if (breadcrumbMap[path]) {
+      items.push({ title: breadcrumbMap[path] });
+    }
+
+    return items;
+  };
 
   const userMenu = {
     items: [
@@ -154,11 +187,14 @@ export default function MainLayout() {
             zIndex: 99,
           }}
         >
-          <Button
-            type="text"
-            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => setCollapsed(!collapsed)}
-          />
+          <Space>
+            <Button
+              type="text"
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={() => setCollapsed(!collapsed)}
+            />
+            <Breadcrumb items={getBreadcrumbItems()} />
+          </Space>
 
           <Space size={16}>
             {user ? (

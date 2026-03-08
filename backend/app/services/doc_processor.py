@@ -10,6 +10,7 @@ from app.core.database import async_session_factory
 from app.models.document import Document
 from app.services.ai_service import (
     extract_key_points,
+    generate_cover_image,
     generate_lecture_text,
     generate_ppt_content,
     generate_summary,
@@ -99,9 +100,14 @@ async def process_document(doc_id: int) -> None:
 
             doc.status = "processing"
             doc.progress = 5.0
+            doc.processing_step = "准备中"
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] Step 1: 文本提取 - {doc.file_type}")
+            doc.processing_step = "提取文本"
+            doc.progress = 10.0
+            await db.commit()
+
             text, page_count, page_texts = await asyncio.to_thread(
                 extract_text, doc.file_path, doc.file_type
             )
@@ -109,6 +115,7 @@ async def process_document(doc_id: int) -> None:
             if not text:
                 doc.status = "error"
                 doc.progress = 0
+                doc.processing_step = None
                 await db.commit()
                 logger.error(f"[Doc {doc_id}] 文本提取失败")
                 return
@@ -116,24 +123,25 @@ async def process_document(doc_id: int) -> None:
             doc.page_count = page_count
             doc.word_count = len(text)
             doc.progress = 20.0
+            doc.processing_step = "生成摘要与知识点"
             await db.commit()
 
-            logger.info(f"[Doc {doc_id}] Step 2: Qwen Plus 生成摘要")
-            summary = await generate_summary(text)
+            logger.info(f"[Doc {doc_id}] Step 2+3: 并行生成摘要 + 提取关键知识点")
+            summary, key_points = await asyncio.gather(
+                generate_summary(text),
+                extract_key_points(text),
+            )
             doc.summary = summary
-            doc.progress = 40.0
-            await db.commit()
-
-            logger.info(f"[Doc {doc_id}] Step 3: Qwen Plus 提取关键知识点")
-            key_points = await extract_key_points(text)
             doc.key_points = key_points
-            doc.progress = 60.0
+            doc.progress = 55.0
+            doc.processing_step = "生成PPT大纲"
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] Step 4: Qwen Plus 生成 PPT 内容")
             ppt_content = await generate_ppt_content(text, page_count)
             doc.ppt_content = ppt_content
-            doc.progress = 80.0
+            doc.progress = 70.0
+            doc.processing_step = "生成讲解"
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本")
@@ -141,9 +149,14 @@ async def process_document(doc_id: int) -> None:
             doc.lecture_slides = slides
             doc.progress = 100.0
             doc.status = "ready"
+            doc.processing_step = None
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] 处理完成 ✓ ({len(slides)} slides)")
+
+            asyncio.create_task(_pregenerate_audio(doc_id, min(3, len(slides))))
+            # 异步生成封面图（不阻塞主流程，已有缓存则跳过）
+            asyncio.create_task(_generate_cover_for_doc(doc_id))
 
         except Exception as e:
             logger.error(f"[Doc {doc_id}] 处理异常: {e}", exc_info=True)
@@ -184,6 +197,8 @@ async def generate_lecture_for_document(doc_id: int) -> None:
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] 讲解生成完成 ✓ ({len(slides)} slides)")
+
+            asyncio.create_task(_pregenerate_audio(doc_id, min(3, len(slides))))
         except Exception as e:
             logger.error(f"[Doc {doc_id}] 讲解生成异常: {e}", exc_info=True)
             try:
@@ -194,6 +209,19 @@ async def generate_lecture_for_document(doc_id: int) -> None:
                     await db.commit()
             except Exception:
                 pass
+
+
+async def _pregenerate_audio(doc_id: int, num_pages: int) -> None:
+    """讲解完成后异步预生成前几页音频"""
+    from app.api.endpoints.tts import _background_synthesize_page_by_doc
+
+    logger.info(f"[Doc {doc_id}] 开始预生成前 {num_pages} 页音频")
+    for page in range(num_pages):
+        try:
+            await _background_synthesize_page_by_doc(doc_id, page)
+        except Exception as e:
+            logger.error(f"[Doc {doc_id}] 第 {page} 页音频预生成失败: {e}")
+    logger.info(f"[Doc {doc_id}] 前 {num_pages} 页音频预生成完成")
 
 
 async def _generate_all_lectures(
@@ -234,3 +262,54 @@ async def _generate_all_lectures(
         else:
             slides.append(r)
     return slides
+
+
+async def _generate_cover_for_doc(doc_id: int) -> None:
+    """为文档生成 AI 封面图，结果持久化到 DB 和磁盘，已有封面则跳过。"""
+    from app.core.config import settings
+
+    async with async_session_factory() as db:
+        try:
+            result = await db.execute(select(Document).where(Document.id == doc_id))
+            doc = result.scalar_one_or_none()
+            if not doc:
+                return
+            # 已有封面且文件存在则直接跳过
+            if doc.cover_url:
+                import os
+                cover_filename = f"doc_{doc_id}_cover.png"
+                cover_path = settings.COVER_DIR / cover_filename
+                if cover_path.exists():
+                    logger.info(f"[Doc {doc_id}] 封面图已存在，跳过生成")
+                    return
+
+            title = doc.title or "文档"
+            summary = (doc.summary or "")[:200]
+            key_points = doc.key_points or []
+            kp_text = "、".join(
+                (key_points if isinstance(key_points, list) else [])[:3]
+            )
+
+            img_prompt = (
+                f"专业学术文档封面插画，主题：《{title}》。"
+                f"内容概要：{summary[:80]}。"
+                f"风格：简约现代，渐变色背景，几何图案装饰，高品质，"
+                f"适合知识类产品封面，无文字，16:9比例。"
+            )
+
+            cover_filename = f"doc_{doc_id}_cover.png"
+            cover_url = await generate_cover_image(
+                img_prompt,
+                str(settings.COVER_DIR),
+                cover_filename,
+            )
+
+            if cover_url:
+                doc.cover_url = cover_url
+                await db.commit()
+                logger.info(f"[Doc {doc_id}] 封面图生成成功: {cover_url}")
+            else:
+                logger.warning(f"[Doc {doc_id}] 封面图生成失败（API 未配置或调用失败）")
+
+        except Exception as e:
+            logger.error(f"[Doc {doc_id}] 封面图生成异常: {e}", exc_info=True)

@@ -2,7 +2,10 @@ from app.models.user import User
 from app.models.document import Document, DocumentGroup
 from app.models.note import LectureNote, DocumentNote
 from app.models.community import CommunityComment, CommunityLike, CommunityFavorite, Notification
-from app.models.social import XhsPost, MomentsPost, ChatMessage
+from app.models.social import (
+    XhsPost, MomentsPost, ChatMessage,
+    ReadingHistory, UserSettings, BookImportTask,
+)
 
 __all__ = [
     "User",
@@ -17,4 +20,7 @@ __all__ = [
     "XhsPost",
     "MomentsPost",
     "ChatMessage",
+    "ReadingHistory",
+    "UserSettings",
+    "BookImportTask",
 ]

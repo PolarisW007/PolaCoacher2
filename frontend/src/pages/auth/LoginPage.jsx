@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Form, Input, Button, Typography, message, Divider, Space, Modal } from 'antd';
+import { Card, Tabs, Form, Input, Button, Typography, message, Divider, Space, Modal } from 'antd';
 import {
   UserOutlined,
   LockOutlined,
+  MobileOutlined,
+  MailOutlined,
   WechatOutlined,
   AlipayCircleOutlined,
   QrcodeOutlined,
@@ -16,8 +18,38 @@ const { Title, Text } = Typography;
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [qrModal, setQrModal] = useState({ open: false, type: '' });
+  const [loginTab, setLoginTab] = useState('password');
+  const [otpSent, setOtpSent] = useState(false);
   const navigate = useNavigate();
   const { login, fetchUser } = useAuth();
+
+  const handleOtpLogin = async (values) => {
+    setLoading(true);
+    try {
+      const res = await authApi.loginOtp({ account: values.account, otp: values.otp });
+      login(res.data.access_token);
+      await fetchUser();
+      message.success('登录成功');
+      navigate('/');
+    } catch (err) {
+      message.error(err.message || '登录失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendOtp = async (account) => {
+    if (!account) { message.warning('请输入手机号或邮箱'); return; }
+    try {
+      const data = account.includes('@') ? { email: account } : { phone: account };
+      await authApi.sendOtp(data);
+      setOtpSent(true);
+      message.success('验证码已发送');
+      setTimeout(() => setOtpSent(false), 60000);
+    } catch (err) {
+      message.error(err.message);
+    }
+  };
 
   const onFinish = async (values) => {
     setLoading(true);
@@ -98,27 +130,60 @@ export default function LoginPage() {
           <Text type="secondary">登录 AI 藏经阁，开启智能学习之旅</Text>
         </div>
 
-        <Form layout="vertical" onFinish={onFinish} size="large" autoComplete="off">
-          <Form.Item
-            name="account"
-            rules={[{ required: true, message: '请输入用户名、邮箱或手机号' }]}
-          >
-            <Input prefix={<UserOutlined />} placeholder="用户名 / 邮箱 / 手机号" />
-          </Form.Item>
-
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: '请输入密码' }]}
-          >
-            <Input.Password prefix={<LockOutlined />} placeholder="密码" />
-          </Form.Item>
-
-          <Form.Item style={{ marginBottom: 16 }}>
-            <Button type="primary" htmlType="submit" block loading={loading}>
-              登 录
-            </Button>
-          </Form.Item>
-        </Form>
+        <Tabs
+          activeKey={loginTab}
+          onChange={setLoginTab}
+          centered
+          size="small"
+          items={[
+            {
+              key: 'password',
+              label: '账号密码',
+              children: (
+                <Form layout="vertical" onFinish={onFinish} size="large" autoComplete="off">
+                  <Form.Item name="account" rules={[{ required: true, message: '请输入用户名、邮箱或手机号' }]}>
+                    <Input prefix={<UserOutlined />} placeholder="用户名 / 邮箱 / 手机号" />
+                  </Form.Item>
+                  <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+                    <Input.Password prefix={<LockOutlined />} placeholder="密码" />
+                  </Form.Item>
+                  <Form.Item style={{ marginBottom: 16 }}>
+                    <Button type="primary" htmlType="submit" block loading={loading}>登 录</Button>
+                  </Form.Item>
+                </Form>
+              ),
+            },
+            {
+              key: 'otp',
+              label: '验证码登录',
+              children: (
+                <Form layout="vertical" onFinish={handleOtpLogin} size="large" autoComplete="off">
+                  <Form.Item name="account" rules={[{ required: true, message: '请输入手机号或邮箱' }]}>
+                    <Input prefix={<MobileOutlined />} placeholder="手机号 / 邮箱" />
+                  </Form.Item>
+                  <Form.Item name="otp" rules={[{ required: true, message: '请输入验证码' }]}>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Input prefix={<MailOutlined />} placeholder="6位验证码" maxLength={6} style={{ flex: 1 }} />
+                      <Button
+                        disabled={otpSent}
+                        onClick={(e) => {
+                          const form = e.target.closest('form');
+                          const input = form?.querySelector('input');
+                          handleSendOtp(input?.value);
+                        }}
+                      >
+                        {otpSent ? '已发送' : '获取验证码'}
+                      </Button>
+                    </Space.Compact>
+                  </Form.Item>
+                  <Form.Item style={{ marginBottom: 16 }}>
+                    <Button type="primary" htmlType="submit" block loading={loading}>登 录</Button>
+                  </Form.Item>
+                </Form>
+              ),
+            },
+          ]}
+        />
 
         <Divider plain>
           <Text type="secondary" style={{ fontSize: 12 }}>

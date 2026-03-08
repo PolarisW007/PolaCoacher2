@@ -12,6 +12,9 @@ export const communityApi = {
   createComment: (docId, data) =>
     client.post(`/community/lectures/${docId}/comments`, data),
   deleteComment: (commentId) => client.delete(`/community/comments/${commentId}`),
+  likeComment: (commentId) => client.post(`/community/comments/${commentId}/like`),
+  unlikeComment: (commentId) => client.delete(`/community/comments/${commentId}/like`),
+  myPublications: (params) => client.get('/community/my-publications', { params }),
 };
 
 export const notificationApi = {

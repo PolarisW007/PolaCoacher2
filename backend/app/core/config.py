@@ -1,6 +1,8 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 class Settings(BaseSettings):
     APP_NAME: str = "AICoacher 2.0"
@@ -15,24 +17,23 @@ class Settings(BaseSettings):
     DASHSCOPE_API_KEY: str = ""
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # OAuth - 微信开放平台
     WECHAT_APP_ID: str = ""
     WECHAT_APP_SECRET: str = ""
     WECHAT_REDIRECT_URI: str = ""
 
-    # OAuth - 支付宝开放平台
     ALIPAY_APP_ID: str = ""
     ALIPAY_REDIRECT_URI: str = ""
 
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-    UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
-    AUDIO_DIR: Path = BASE_DIR / "data" / "audio"
-    COVER_DIR: Path = BASE_DIR / "data" / "covers"
+    BASE_DIR: Path = _PROJECT_ROOT
+    UPLOAD_DIR: Path = _PROJECT_ROOT / "data" / "uploads"
+    AUDIO_DIR: Path = _PROJECT_ROOT / "data" / "audio"
+    COVER_DIR: Path = _PROJECT_ROOT / "data" / "covers"
 
     MAX_UPLOAD_SIZE_MB: int = 100
     ALLOWED_EXTENSIONS: set[str] = {"pdf", "docx", "txt", "md"}
 
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    ROOT_PATH: str = ""
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://42.121.164.11"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

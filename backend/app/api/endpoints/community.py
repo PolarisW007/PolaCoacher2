@@ -21,12 +21,12 @@ router = APIRouter(prefix="/community", tags=["社区"])
 async def list_community_lectures(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
-    sort: str = Query("latest", pattern="^(latest|hot)$"),
+    sort: str = Query("latest", pattern="^(latest|hot|recommend)$"),
     search: str | None = None,
     tag: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    base = select(Document).where(Document.lecture_visibility == "public")
+    base = select(Document).where(Document.lecture_visibility == "public").options(selectinload(Document.owner))
     count_q = select(func.count(Document.id)).where(Document.lecture_visibility == "public")
 
     if search:
@@ -41,6 +41,10 @@ async def list_community_lectures(
 
     if sort == "hot":
         base = base.order_by((Document.like_count + Document.play_count).desc())
+    elif sort == "recommend":
+        base = base.order_by(
+            (Document.like_count * 2 + Document.play_count + Document.comment_count * 3).desc()
+        )
     else:
         base = base.order_by(Document.published_at.desc())
 
@@ -58,10 +62,42 @@ async def list_community_lectures(
     )
 
 
+@router.get("/my-publications", response_model=ApiResponse[PaginatedData[DocumentOut]])
+async def my_publications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    base = select(Document).where(
+        Document.user_id == user.id,
+        Document.lecture_visibility == "public",
+    ).options(selectinload(Document.owner))
+    count_q = select(func.count(Document.id)).where(
+        Document.user_id == user.id,
+        Document.lecture_visibility == "public",
+    )
+    total = (await db.execute(count_q)).scalar() or 0
+    base = base.order_by(Document.published_at.desc())
+    base = base.offset((page - 1) * page_size).limit(page_size)
+    docs = [DocumentOut.model_validate(d) for d in (await db.execute(base)).scalars().all()]
+    return ApiResponse.ok(
+        data=PaginatedData(
+            items=docs,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=ceil(total / page_size) if total else 0,
+        )
+    )
+
+
 @router.get("/lectures/{doc_id}", response_model=ApiResponse[DocumentOut])
 async def get_community_lecture(doc_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Document).where(Document.id == doc_id, Document.lecture_visibility == "public")
+        select(Document).where(
+            Document.id == doc_id, Document.lecture_visibility == "public"
+        ).options(selectinload(Document.owner))
     )
     doc = result.scalar_one_or_none()
     if not doc:
@@ -233,6 +269,13 @@ async def create_comment(
     if not doc:
         raise HTTPException(status_code=404, detail="讲解不存在或未公开")
 
+    # 敏感词过滤
+    _SENSITIVE_WORDS = ["赌博", "色情", "暴力", "毒品", "诈骗", "传销", "枪支", "反动"]
+    content_lower = req.content.lower()
+    for word in _SENSITIVE_WORDS:
+        if word in content_lower:
+            raise HTTPException(status_code=400, detail="评论包含不当内容，请修改后重新发表")
+
     reply_to_user_id = None
     if req.parent_id:
         parent = (
@@ -313,3 +356,56 @@ async def delete_comment(
     if doc and doc.comment_count > 0:
         doc.comment_count -= 1
     return ApiResponse.ok(msg="评论已删除")
+
+
+@router.post("/comments/{comment_id}/like", response_model=ApiResponse)
+async def like_comment(
+    comment_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    comment = (
+        await db.execute(select(CommunityComment).where(CommunityComment.id == comment_id))
+    ).scalar_one_or_none()
+    if not comment or comment.is_deleted:
+        raise HTTPException(status_code=404, detail="评论不存在")
+
+    existing = await db.execute(
+        select(CommunityLike).where(
+            CommunityLike.user_id == user.id,
+            CommunityLike.target_type == "comment",
+            CommunityLike.target_id == comment_id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="已点赞")
+
+    db.add(CommunityLike(user_id=user.id, target_type="comment", target_id=comment_id))
+    comment.like_count += 1
+    return ApiResponse.ok(msg="点赞成功")
+
+
+@router.delete("/comments/{comment_id}/like", response_model=ApiResponse)
+async def unlike_comment(
+    comment_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(CommunityLike).where(
+            CommunityLike.user_id == user.id,
+            CommunityLike.target_type == "comment",
+            CommunityLike.target_id == comment_id,
+        )
+    )
+    like = result.scalar_one_or_none()
+    if not like:
+        raise HTTPException(status_code=400, detail="未点赞")
+    await db.delete(like)
+
+    comment = (
+        await db.execute(select(CommunityComment).where(CommunityComment.id == comment_id))
+    ).scalar_one_or_none()
+    if comment and comment.like_count > 0:
+        comment.like_count -= 1
+    return ApiResponse.ok(msg="已取消点赞")

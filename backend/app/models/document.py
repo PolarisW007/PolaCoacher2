@@ -38,6 +38,7 @@ class Document(Base):
 
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
+    processing_step: Mapped[str | None] = mapped_column(String(50), nullable=True)
     audio_ready_pages: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     cover_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)

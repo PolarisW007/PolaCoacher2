@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Typography,
   Tabs,
@@ -33,12 +33,15 @@ const categoryTags = ['全部', '计算机', '人工智能', '文学', '经济',
 
 function LectureCard({ doc }) {
   const navigate = useNavigate();
+  const [hovered, setHovered] = useState(false);
 
   return (
     <Card
       className="card-hover"
       hoverable
       onClick={() => navigate(`/community/${doc.id}`)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{ borderRadius: 12, overflow: 'hidden' }}
       styles={{ body: { padding: 16 } }}
     >
@@ -51,9 +54,39 @@ function LectureCard({ doc }) {
           alignItems: 'center',
           justifyContent: 'center',
           marginBottom: 12,
+          position: 'relative',
+          overflow: 'hidden',
         }}
       >
-        <PlayCircleOutlined style={{ fontSize: 40, color: 'rgba(255,255,255,0.9)' }} />
+        {/* AI 生成封面图或书籍封面（优先），fallback 到渐变色 */}
+        {doc.cover_url && (
+          <img
+            src={(() => {
+              const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+              return doc.cover_url.startsWith('http')
+                ? doc.cover_url
+                : `${BASE}/api${doc.cover_url}`;
+            })()}
+            alt={doc.title}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+        )}
+        {!doc.cover_url && (
+          <PlayCircleOutlined style={{ fontSize: 40, color: 'rgba(255,255,255,0.9)', position: 'relative', zIndex: 1 }} />
+        )}
+        {/* Hover 时显示简介 */}
+        {hovered && doc.summary && (
+          <div style={{
+            position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 12, transition: 'opacity 0.25s', zIndex: 2,
+          }}>
+            <Text style={{ color: '#fff', fontSize: 12, lineHeight: 1.5, textAlign: 'center' }} ellipsis={{ rows: 5 }}>
+              {doc.summary?.slice(0, 100)}{doc.summary?.length > 100 ? '...' : ''}
+            </Text>
+          </div>
+        )}
       </div>
 
       <Paragraph
@@ -73,17 +106,18 @@ function LectureCard({ doc }) {
         </div>
       )}
 
+      {doc.owner && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+          <Avatar size={20} icon={<UserOutlined />} src={doc.owner?.avatar_url} />
+          <Text type="secondary" style={{ fontSize: 12 }}>{doc.owner?.username}</Text>
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Space size={12}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <EyeOutlined /> {doc.play_count}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <HeartOutlined /> {doc.like_count}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <MessageOutlined /> {doc.comment_count}
-          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}><EyeOutlined /> {doc.play_count}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}><HeartOutlined /> {doc.like_count}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}><MessageOutlined /> {doc.comment_count}</Text>
         </Space>
       </div>
     </Card>
@@ -91,41 +125,65 @@ function LectureCard({ doc }) {
 }
 
 export default function CommunityPage() {
+  const { user } = useAuth();
   const [lectures, setLectures] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sort, setSort] = useState('latest');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedTag, setSelectedTag] = useState('全部');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
 
-  const fetchLectures = useCallback(async () => {
+  const fetchIdRef = useRef(0);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 500);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search]);
+
+  const fetchLectures = useCallback(async (fetchPage) => {
+    const currentFetchId = ++fetchIdRef.current;
     setLoading(true);
     try {
-      const params = { page, page_size: 20, sort };
-      if (search) params.search = search;
-      if (selectedTag !== '全部') params.tag = selectedTag;
-      const res = await communityApi.listLectures(params);
-      setLectures(page === 1 ? res.data.items : (prev) => [...prev, ...res.data.items]);
-      setTotal(res.data.total);
+      let res;
+      if (sort === 'mine') {
+        res = await communityApi.myPublications({ page: fetchPage, page_size: 20 });
+      } else {
+        const params = { page: fetchPage, page_size: 20, sort };
+        if (debouncedSearch) params.search = debouncedSearch;
+        if (selectedTag !== '全部') params.tag = selectedTag;
+        res = await communityApi.listLectures(params);
+      }
+      if (currentFetchId !== fetchIdRef.current) return;
+      const items = res.data?.items || [];
+      setLectures(fetchPage === 1 ? items : (prev) => [...prev, ...items]);
+      setTotal(res.data?.total || 0);
     } catch (err) {
-      message.error(err.message);
+      if (currentFetchId === fetchIdRef.current) {
+        message.error(err.message || '加载失败');
+      }
     } finally {
-      setLoading(false);
+      if (currentFetchId === fetchIdRef.current) setLoading(false);
     }
-  }, [page, sort, search, selectedTag]);
+  }, [sort, debouncedSearch, selectedTag]);
 
   useEffect(() => {
     setPage(1);
-  }, [sort, search, selectedTag]);
+    fetchLectures(1);
+  }, [sort, debouncedSearch, selectedTag, fetchLectures]);
 
   useEffect(() => {
-    fetchLectures();
-  }, [fetchLectures]);
+    if (page > 1) fetchLectures(page);
+  }, [page, fetchLectures]);
 
   const tabItems = [
+    { key: 'recommend', label: '推荐' },
     { key: 'latest', label: '最新' },
     { key: 'hot', label: '热门' },
+    ...(user ? [{ key: 'mine', label: '我的发布' }] : []),
   ];
 
   return (

@@ -97,15 +97,28 @@ async def export_notes(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.models.document import Document
+    doc = (await db.execute(
+        select(Document).where(Document.id == doc_id, Document.user_id == user.id)
+    )).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    doc_title = doc.title
+
     result = await db.execute(
         select(LectureNote)
         .where(LectureNote.document_id == doc_id, LectureNote.user_id == user.id)
         .order_by(LectureNote.page_number)
     )
     notes = result.scalars().all()
-    lines = ["# 讲解备注\n"]
+    lines = [
+        f"# 讲解备注 — {doc_title}\n",
+        f"> 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+        f"> 共 {len(notes)} 页备注\n",
+        "---\n",
+    ]
     for n in notes:
         lines.append(f"## 第 {n.page_number} 页\n")
         lines.append(n.content)
-        lines.append("\n")
+        lines.append("\n---\n")
     return ApiResponse.ok(data="\n".join(lines))

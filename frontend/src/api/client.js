@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+
 const client = axios.create({
-  baseURL: '/api',
+  baseURL: `${BASE}/api`,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -26,8 +28,9 @@ client.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+      const loginPath = `${BASE}/login`;
+      if (!window.location.pathname.endsWith('/login')) {
+        window.location.href = loginPath;
       }
     }
     const msg = err.response?.data?.detail || err.response?.data?.msg || err.message;
