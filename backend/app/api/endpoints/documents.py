@@ -623,10 +623,14 @@ async def generate_completion_card(
         asyncio.create_task(_gen_bg())
         cover_url = None  # 前端轮询或使用默认
 
+    # 无论图片是否就绪，都返回预期的轮询 URL，让前端直接用
+    expected_cover_url = f"/covers/{cover_filename}"
+
     return ApiResponse.ok(data={
         "title": title,
         "completion_text": completion_text,
-        "cover_url": cover_url,
+        "cover_url": cover_url,                    # 已就绪时有值，否则 None
+        "expected_cover_url": expected_cover_url,  # 固定返回，前端用于轮询
         "cover_ready": cover_url is not None,
         "summary": summary,
         "key_points": kp_list[:5],

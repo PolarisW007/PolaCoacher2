@@ -701,25 +701,27 @@ export default function DocumentStudyPage() {
       const res = await docApi.completionCard(id);
       const data = res.data;
       setCompletionData(data);
-      // 如果封面图已生成直接显示
-      if (data?.cover_url) {
-        const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
-        setCompletionCoverUrl(`${BASE}/api${data.cover_url}`);
-      } else {
-        // 轮询等待封面图（最多 30 秒）
-        const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
-        const pollUrl = `${BASE}/api${'/covers/completion_' + id + '_' + (res.data?.user_id || '') + '.png'}`;
+
+      // covers 由 nginx 直接代理，路径前缀是 BASE（不含 /api）
+      const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+      if (data?.cover_ready && data?.cover_url) {
+        // 封面图已就绪，直接显示
+        setCompletionCoverUrl(`${BASE}${data.cover_url}`);
+      } else if (data?.expected_cover_url) {
+        // 后台异步生成中，轮询（最多 60 秒，每 2 秒一次）
+        const pollUrl = `${BASE}${data.expected_cover_url}`;
         let tries = 0;
         const poll = setInterval(async () => {
           tries++;
           try {
-            const r = await fetch(pollUrl);
+            const r = await fetch(pollUrl, { method: 'HEAD' });
             if (r.ok) {
               setCompletionCoverUrl(pollUrl + '?t=' + Date.now());
               clearInterval(poll);
             }
           } catch { /* ignore */ }
-          if (tries >= 15) clearInterval(poll);
+          if (tries >= 30) clearInterval(poll);  // 最多 60s
         }, 2000);
       }
     } catch (err) {
