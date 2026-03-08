@@ -284,18 +284,28 @@ async def _generate_cover_for_doc(doc_id: int) -> None:
                     return
 
             title = doc.title or "文档"
-            summary = (doc.summary or "")[:200]
+            summary = (doc.summary or "")[:300]
             key_points = doc.key_points or []
-            kp_text = "、".join(
-                (key_points if isinstance(key_points, list) else [])[:3]
-            )
+            kp_list = key_points if isinstance(key_points, list) else []
 
-            img_prompt = (
-                f"专业学术文档封面插画，主题：《{title}》。"
-                f"内容概要：{summary[:80]}。"
-                f"风格：简约现代，渐变色背景，几何图案装饰，高品质，"
-                f"适合知识类产品封面，无文字，16:9比例。"
+            # 汇总讲解页要点
+            all_slide_points: list[str] = []
+            lecture_slides = doc.lecture_slides or []
+            if isinstance(lecture_slides, list):
+                for sl in lecture_slides:
+                    if isinstance(sl, dict):
+                        pts = sl.get("points") or sl.get("key_points") or []
+                        if isinstance(pts, list):
+                            all_slide_points.extend(pts)
+
+            from app.services.ai_service import generate_image_prompt
+            img_prompt = await generate_image_prompt(
+                title=title,
+                summary=summary,
+                key_points=kp_list,
+                all_slide_points=all_slide_points,
             )
+            logger.info(f"[Doc {doc_id}] 封面图prompt: {img_prompt[:120]}...")
 
             cover_filename = f"doc_{doc_id}_cover.png"
             cover_url = await generate_cover_image(

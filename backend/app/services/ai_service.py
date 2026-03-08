@@ -205,6 +205,42 @@ async def generate_moments_content(summary: str, key_points: list[str]) -> dict:
         return {"title": "读书笔记", "content": result[:200], "cover_prompt": "reading illustration"}
 
 
+async def generate_image_prompt(title: str, summary: str, key_points: list[str], all_slide_points: list[str] = None) -> str:
+    """基于文档内容生成适合小红书传播的、有科技感和未来感的图片 prompt"""
+    kp_text = "\n".join(f"- {p}" for p in (key_points or [])[:8])
+    slides_text = "\n".join(f"- {p}" for p in (all_slide_points or [])[:15])
+
+    meta_prompt = (
+        f"你是一位顶级AI绘画提示词工程师，擅长创作在小红书上高传播力的视觉内容。\n\n"
+        f"书名/标题：《{title}》\n"
+        f"摘要：{summary[:300]}\n"
+        f"核心要点：\n{kp_text}\n"
+    )
+    if slides_text:
+        meta_prompt += f"全文讲解要点汇总：\n{slides_text}\n"
+
+    meta_prompt += (
+        f"\n请根据以上内容，生成一段英文的AI绘画提示词(prompt)，要求：\n"
+        f"1. 科技感、未来感强烈，色调以深蓝、青色、金色为主\n"
+        f"2. 融入与文档主题直接相关的视觉隐喻和场景互动（不要泛泛的书本/星光）\n"
+        f"3. 风格参考：赛博朋克数据流、全息投影、神经网络可视化、未来实验室等\n"
+        f"4. 构图有层次感，前景有具象元素，中景有科技场景，背景有氛围光效\n"
+        f"5. 适合小红书方形卡片展示，画面精致有质感\n"
+        f"6. 只输出英文prompt本身，不要任何解释和前缀，不超过150词\n"
+    )
+
+    result = await _call_qwen(
+        meta_prompt,
+        system="You are an expert AI art prompt engineer. Output ONLY the English prompt, nothing else.",
+        temperature=0.9,
+        max_tokens=300,
+    )
+    cleaned = result.strip().strip('"').strip("'")
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return cleaned
+
+
 async def generate_cover_image(prompt: str, save_dir: str, filename: str) -> str | None:
     """使用通义万象生成封面图"""
     if not settings.DASHSCOPE_API_KEY:

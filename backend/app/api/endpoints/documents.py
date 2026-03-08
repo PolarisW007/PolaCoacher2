@@ -605,7 +605,7 @@ async def generate_completion_card(
     db: AsyncSession = Depends(get_db),
 ):
     """读完文章后生成总结卡片（AI读后感文字 + 异步封面图）"""
-    from app.services.ai_service import generate_cover_image, _call_qwen
+    from app.services.ai_service import generate_cover_image, generate_image_prompt, _call_qwen
 
     doc = await _get_user_doc(doc_id, user.id, db)
 
@@ -614,15 +614,30 @@ async def generate_completion_card(
     kp_list = key_points if isinstance(key_points, list) else []
     title = doc.title or "本文"
 
+    # 汇总所有讲解页的核心要点
+    all_slide_points: list[str] = []
+    lecture_slides = doc.lecture_slides or []
+    if isinstance(lecture_slides, list):
+        for slide in lecture_slides:
+            if isinstance(slide, dict):
+                pts = slide.get("points") or slide.get("key_points") or []
+                if isinstance(pts, list):
+                    all_slide_points.extend(pts)
+                slide_title = slide.get("title", "")
+                if slide_title and slide_title not in all_slide_points:
+                    all_slide_points.append(slide_title)
+
     # 生成读后感（文字部分，快速返回）
-    if not summary:
+    if not summary and not all_slide_points:
         completion_text = f"🎉 恭喜完成《{title}》的阅读！"
     else:
         kp_text = "\n".join(f"- {p}" for p in kp_list[:5])
+        sp_text = "\n".join(f"- {p}" for p in all_slide_points[:10])
         prompt = (
             f"我刚刚读完了《{title}》。\n"
             f"文档摘要：{summary[:400]}\n"
-            f"核心要点：\n{kp_text}\n\n"
+            f"核心要点：\n{kp_text}\n"
+            f"讲解要点汇总：\n{sp_text}\n\n"
             f"请用80字以内，以第一人称写一段读后感，适合分享到朋友圈或小红书，"
             f"语气积极向上，带1-2个相关emoji，不要使用#话题标签。"
         )
@@ -634,26 +649,33 @@ async def generate_completion_card(
     if cover_path.exists():
         cover_url = f"/covers/{cover_filename}"
     else:
-        # 后台异步生成图片（不阻塞响应）
-        img_prompt = (
-            f"读书完成卡片，书名《{title}》，简约书签风格，暖色调，"
-            f"书本和星光元素，高品质插画，适合社交媒体分享"
-        )
-
+        # 先用 Qwen 生成高质量的、有科技感/未来感/场景互动的图片 prompt
+        # 再异步调用通义万象生图（不阻塞响应）
         async def _gen_bg():
-            await generate_cover_image(img_prompt, str(settings.COVER_DIR), cover_filename)
+            import logging
+            _log = logging.getLogger(__name__)
+            try:
+                img_prompt = await generate_image_prompt(
+                    title=title,
+                    summary=summary,
+                    key_points=kp_list,
+                    all_slide_points=all_slide_points,
+                )
+                _log.info(f"[CompletionCard] doc={doc_id} 生成图片prompt: {img_prompt[:120]}...")
+                await generate_cover_image(img_prompt, str(settings.COVER_DIR), cover_filename)
+            except Exception as e:
+                _log.error(f"[CompletionCard] doc={doc_id} 封面图生成失败: {e}")
 
         asyncio.create_task(_gen_bg())
-        cover_url = None  # 前端轮询或使用默认
+        cover_url = None
 
-    # 无论图片是否就绪，都返回预期的轮询 URL，让前端直接用
     expected_cover_url = f"/covers/{cover_filename}"
 
     return ApiResponse.ok(data={
         "title": title,
         "completion_text": completion_text,
-        "cover_url": cover_url,                    # 已就绪时有值，否则 None
-        "expected_cover_url": expected_cover_url,  # 固定返回，前端用于轮询
+        "cover_url": cover_url,
+        "expected_cover_url": expected_cover_url,
         "cover_ready": cover_url is not None,
         "summary": summary,
         "key_points": kp_list[:5],
