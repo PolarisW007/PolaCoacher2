@@ -3,7 +3,7 @@ import { Button, Space, Spin, Result, Skeleton, Tooltip } from 'antd';
 import {
   ReloadOutlined, ZoomInOutlined, ZoomOutOutlined,
   LeftOutlined, RightOutlined, FilePdfOutlined,
-  FullscreenOutlined,
+  FullscreenOutlined, DownloadOutlined, LockOutlined,
 } from '@ant-design/icons';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
@@ -12,25 +12,34 @@ import 'react-pdf/dist/Page/TextLayer.css';
 // Configure pdf.js worker — use CDN to avoid nginx MIME type issues with .mjs
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+const PAGE_LIMIT = 50; // 在线最多渲染 50 页，超出提示下载
+
 /**
  * PdfViewer — 基于 react-pdf，支持带 JWT 认证的 PDF 渲染。
- * 通过在 URL 中附加 token 参数实现认证（后端 get_pdf 接受 ?token= 查询参数）。
+ * 超过 50 页时，第 50 页显示下载引导浮层，不再渲染后续页。
  *
  * Props:
  *   url          — PDF 的 API 地址（不含 token）
  *   currentPage  — 当前讲解页 (0-based)，自动跳转对应 PDF 页
  *   onPageChange — (pageNumber: number) 用户手动翻页回调 (1-based)
  *   height       — 容器高度，默认 '100%'
+ *   filename     — 下载文件名（可选）
  */
-export default function PdfViewer({ url, currentPage = 0, onPageChange, height = '100%' }) {
-  const [numPages, setNumPages]   = useState(null);
+export default function PdfViewer({ url, currentPage = 0, onPageChange, height = '100%', filename = 'document.pdf' }) {
+  const [numPages, setNumPages]     = useState(null);
   const [pageNumber, setPageNumber] = useState(1);   // 1-based
-  const [scale, setScale]         = useState(1.0);
-  const [docError, setDocError]   = useState(null);
-  const [key, setKey]             = useState(0);     // force remount on retry
+  const [scale, setScale]           = useState(1.0);
+  const [docError, setDocError]     = useState(null);
+  const [key, setKey]               = useState(0);   // force remount on retry
 
   const containerRef = useRef(null);
   const [containerWidth, setContainerWidth] = useState(600);
+
+  // 实际可浏览的最大页码（受 PAGE_LIMIT 限制）
+  const visiblePages = numPages ? Math.min(numPages, PAGE_LIMIT) : null;
+  const isLimited    = numPages != null && numPages > PAGE_LIMIT;
+  // 当前是否在最后一可见页（且原始文档还有更多页）
+  const isAtLimit    = isLimited && pageNumber === PAGE_LIMIT;
 
   // Build authenticated URL: append ?token=<jwt> so pdf.js worker can fetch with auth
   const authUrl = useCallback(() => {
@@ -41,13 +50,14 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
     return `${url}${sep}token=${encodeURIComponent(token)}`;
   }, [url]);
 
-  // Sync currentPage (0-based lecture slide) → PDF page (1-based)
+  // Sync currentPage (0-based lecture slide) → PDF page (1-based, capped at PAGE_LIMIT)
   useEffect(() => {
     const target = Math.max(1, currentPage + 1);
-    setPageNumber(numPages ? Math.min(target, numPages) : target);
-  }, [currentPage, numPages]);
+    const capped = visiblePages ? Math.min(target, visiblePages) : target;
+    setPageNumber(capped);
+  }, [currentPage, visiblePages]);
 
-  // Reset error when url changes
+  // Reset when url changes
   useEffect(() => {
     setDocError(null);
     setNumPages(null);
@@ -69,9 +79,16 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
   }, []);
 
   const goTo = (n) => {
-    const page = Math.max(1, Math.min(numPages || 1, n));
+    const page = Math.max(1, Math.min(visiblePages || 1, n));
     setPageNumber(page);
     onPageChange?.(page);
+  };
+
+  const handleDownload = () => {
+    const link = document.createElement('a');
+    link.href = authUrl();
+    link.download = filename;
+    link.click();
   };
 
   const heightStyle = typeof height === 'number' ? `${height}px` : height;
@@ -103,13 +120,17 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
               style={{ color: '#ccc', background: 'transparent', border: '1px solid #555' }}
             />
           </Tooltip>
-          <span style={{ color: '#ccc', fontSize: 12, minWidth: 70, textAlign: 'center' }}>
-            {numPages ? `${pageNumber} / ${numPages}` : '加载中…'}
+          <span style={{ color: '#ccc', fontSize: 12, minWidth: 80, textAlign: 'center' }}>
+            {visiblePages
+              ? isLimited
+                ? `${pageNumber} / ${PAGE_LIMIT}（共${numPages}页）`
+                : `${pageNumber} / ${numPages}`
+              : '加载中…'}
           </span>
           <Tooltip title="下一页">
             <Button
               size="small" icon={<RightOutlined />}
-              disabled={!numPages || pageNumber >= numPages}
+              disabled={!visiblePages || pageNumber >= visiblePages}
               onClick={() => goTo(pageNumber + 1)}
               style={{ color: '#ccc', background: 'transparent', border: '1px solid #555' }}
             />
@@ -144,6 +165,13 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
               style={{ color: '#ccc', background: 'transparent', border: '1px solid #555' }}
             />
           </Tooltip>
+          <Tooltip title="下载完整PDF">
+            <Button
+              size="small" icon={<DownloadOutlined />}
+              onClick={handleDownload}
+              style={{ color: '#52c41a', background: 'transparent', border: '1px solid #555' }}
+            />
+          </Tooltip>
           <Tooltip title="新窗口打开">
             <Button
               size="small" icon={<FullscreenOutlined />}
@@ -173,38 +201,82 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
             />
           </div>
         ) : (
-          <Document
-            key={key}
-            file={authUrl()}
-            onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-            onLoadError={(err) => setDocError(err?.message || 'PDF 加载失败，请重试')}
-            loading={
-              <div style={{ padding: 24, width: containerWidth || '100%' }}>
-                <Spin size="large" style={{ display: 'block', margin: '60px auto' }} />
-                <Skeleton active paragraph={{ rows: 6 }} style={{ marginTop: 24 }} />
-              </div>
-            }
-            error={
-              <Result
-                status="warning"
-                title={<span style={{ color: '#fff' }}>PDF 解析失败</span>}
-                extra={<Button icon={<ReloadOutlined />} onClick={() => setKey(k => k + 1)}>重试</Button>}
-              />
-            }
-          >
-            <Page
-              pageNumber={pageNumber}
-              width={Math.min((containerWidth || 600) * scale, (containerWidth || 600))}
-              scale={scale}
-              renderTextLayer
-              renderAnnotationLayer
+          <div style={{ position: 'relative', width: '100%', display: 'flex', justifyContent: 'center' }}>
+            <Document
+              key={key}
+              file={authUrl()}
+              onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+              onLoadError={(err) => setDocError(err?.message || 'PDF 加载失败，请重试')}
               loading={
                 <div style={{ padding: 24, width: containerWidth || '100%' }}>
-                  <Skeleton active paragraph={{ rows: 12 }} />
+                  <Spin size="large" style={{ display: 'block', margin: '60px auto' }} />
+                  <Skeleton active paragraph={{ rows: 6 }} style={{ marginTop: 24 }} />
                 </div>
               }
-            />
-          </Document>
+              error={
+                <Result
+                  status="warning"
+                  title={<span style={{ color: '#fff' }}>PDF 解析失败</span>}
+                  extra={<Button icon={<ReloadOutlined />} onClick={() => setKey(k => k + 1)}>重试</Button>}
+                />
+              }
+            >
+              <Page
+                pageNumber={pageNumber}
+                width={Math.min((containerWidth || 600) * scale, (containerWidth || 600))}
+                scale={scale}
+                renderTextLayer
+                renderAnnotationLayer
+                loading={
+                  <div style={{ padding: 24, width: containerWidth || '100%' }}>
+                    <Skeleton active paragraph={{ rows: 12 }} />
+                  </div>
+                }
+              />
+            </Document>
+
+            {/* 超出 50 页时的锁定浮层（仅在第 50 页显示） */}
+            {isAtLimit && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'linear-gradient(to bottom, rgba(30,30,30,0.1) 0%, rgba(20,20,20,0.92) 40%, rgba(10,10,10,0.98) 100%)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end',
+                paddingBottom: 48, paddingInline: 24,
+              }}>
+                <div style={{
+                  textAlign: 'center', maxWidth: 320,
+                  background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(8px)',
+                  borderRadius: 16, padding: '28px 32px', border: '1px solid rgba(255,255,255,0.12)',
+                }}>
+                  <LockOutlined style={{ fontSize: 36, color: '#faad14', marginBottom: 12 }} />
+                  <div style={{ color: '#fff', fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+                    在线预览已到第 {PAGE_LIMIT} 页
+                  </div>
+                  <div style={{ color: '#bbb', fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
+                    该文档共 <span style={{ color: '#faad14', fontWeight: 600 }}>{numPages}</span> 页，
+                    在线阅读最多支持 {PAGE_LIMIT} 页。<br />
+                    下载完整 PDF 到本地即可阅读全部内容。
+                  </div>
+                  <Button
+                    type="primary"
+                    size="large"
+                    icon={<DownloadOutlined />}
+                    onClick={handleDownload}
+                    style={{
+                      width: '100%', borderRadius: 8, fontWeight: 600,
+                      background: 'linear-gradient(135deg, #2dce89 0%, #1a7a52 100%)',
+                      border: 'none', height: 44,
+                    }}
+                  >
+                    下载完整 PDF（{numPages} 页）
+                  </Button>
+                  <div style={{ color: '#888', fontSize: 12, marginTop: 12 }}>
+                    或点击右上角 <FullscreenOutlined style={{ fontSize: 11 }} /> 在新窗口打开
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

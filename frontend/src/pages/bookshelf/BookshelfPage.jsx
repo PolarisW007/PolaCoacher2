@@ -974,29 +974,30 @@ export default function BookshelfPage() {
   const [createGroupModalOpen, setCreateGroupModalOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
 
-  const fetchDocs = useCallback(async () => {
+  const coverTriggeredRef = useRef(new Set());
+
+  const fetchDocs = useCallback(async (silent = false) => {
     if (!user) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const params = { page: 1, page_size: 100 };
       if (searchText) params.search = searchText;
       const res = await docApi.list(params);
       const items = res.data.items;
       setDocs(items);
-      // 为还没有封面图的已就绪文档静默触发 AI 生成（无需等待）
-      // 有 cover_url（如书籍搜索已带封面）则跳过，避免重复生成
       items
-        .filter((d) => d.status === 'ready' && !d.cover_url)
+        .filter((d) => d.status === 'ready' && !d.cover_url && !coverTriggeredRef.current.has(d.id))
         .slice(0, 5)
         .forEach((d) => {
+          coverTriggeredRef.current.add(d.id);
           docApi.generateCover(d.id).catch(() => { /* silent */ });
         });
       return items;
     } catch (err) {
-      message.error(err.message);
+      if (!silent) message.error(err.message);
       return [];
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [user, searchText, activeTab]);
 
@@ -1015,29 +1016,45 @@ export default function BookshelfPage() {
     fetchGroups();
   }, [fetchDocs, fetchGroups]);
 
+  const fetchDocsRef = useRef(fetchDocs);
+  fetchDocsRef.current = fetchDocs;
+
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return;
+    pollingRef.current = setInterval(async () => {
+      const items = await fetchDocsRef.current(true);
+      const still = items?.some(
+        (d) => d.status === 'pending' || d.status === 'processing' || d.status === 'importing'
+      );
+      if (!still && pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    }, 5000);
+  }, []);
+
+  const prevHasProcessingRef = useRef(false);
   useEffect(() => {
     const hasProcessing = docs.some(
       (d) => d.status === 'pending' || d.status === 'processing' || d.status === 'importing'
     );
-    if (hasProcessing && !pollingRef.current) {
-      pollingRef.current = setInterval(async () => {
-        const items = await fetchDocs();
-        const still = items?.some(
-          (d) => d.status === 'pending' || d.status === 'processing' || d.status === 'importing'
-        );
-        if (!still && pollingRef.current) {
-          clearInterval(pollingRef.current);
-          pollingRef.current = null;
-        }
-      }, 3000);
+    if (hasProcessing && !prevHasProcessingRef.current) {
+      startPolling();
+    } else if (!hasProcessing && pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
     }
+    prevHasProcessingRef.current = hasProcessing;
+  }, [docs, startPolling]);
+
+  useEffect(() => {
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
     };
-  }, [docs, fetchDocs]);
+  }, []);
 
   const handleMoveToGroup = async (docId, groupId) => {
     try {

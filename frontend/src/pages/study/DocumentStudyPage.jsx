@@ -960,7 +960,7 @@ export default function DocumentStudyPage() {
         {/* Panel content */}
         <div style={{ flex: 1, overflow: 'auto' }}>
           {rightPanel === 'pdf' && (
-            <PdfViewer url={pdfUrl} currentPage={currentPage} height="calc(100vh - 200px)" />
+            <PdfViewer url={pdfUrl} currentPage={currentPage} height="calc(100vh - 200px)" filename={doc?.filename || 'document.pdf'} />
           )}
 
           {rightPanel === 'chat' && (
