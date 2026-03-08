@@ -499,7 +499,15 @@ function AddDocModal({ open, onClose, onUploadDone }) {
           }
         } catch { /* ignore check errors */ }
       }
-      await docApi.bookImport({
+      // 只有真正指向 PDF 文件的 URL 才作为 download_url
+      // 微信读书等平台的详情页链接不是 PDF，不能下载
+      const directDownloadUrl = book.download_url &&
+        !book.download_url.includes('weread.qq.com') &&
+        !book.download_url.includes('/bookDetail/')
+        ? book.download_url
+        : undefined;
+
+      const res = await docApi.bookImport({
         title: book.title,
         author: book.author,
         isbn: book.isbn,
@@ -507,13 +515,19 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         publish_year: book.publish_year,
         language: book.language,
         file_size: book.file_size,
-        download_url: book.download_url || book.link,
-        cover_url: book.cover_url || null,   // 直接复用书籍搜索的封面图
+        download_url: directDownloadUrl,
+        cover_url: book.cover_url || null,
       });
-      message.success(`《${book.title}》正在导入中...`);
+      const msg = res.data?.msg || res.msg;
+      if (directDownloadUrl) {
+        message.success(`《${book.title}》正在导入中...`);
+      } else {
+        message.success(`《${book.title}》已添加到书架，请手动上传 PDF 文件`);
+      }
       onUploadDone?.();
+      handleClose();
     } catch (err) {
-      message.error(err.message);
+      message.error(err.response?.data?.detail || err.message);
     } finally {
       setImportingBooks((prev) => {
         const next = new Set(prev);
@@ -734,7 +748,7 @@ function AddDocModal({ open, onClose, onUploadDone }) {
   const renderBookSearch = () => (
     <div style={{ marginTop: 8 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 10, fontSize: 12 }}>
-        通过 Open Library 搜索书籍元数据，添加到书架后可手动上传 PDF 进行 AI 分析
+        搜索书籍信息并添加到书架，添加后请上传对应的 PDF 文件进行 AI 分析
       </Text>
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
         <Input
@@ -791,7 +805,7 @@ function AddDocModal({ open, onClose, onUploadDone }) {
                         {book.page_count && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.page_count}页</Tag>}
                       </div>
                     </div>
-                    <Tooltip title="添加书籍元数据到书架，然后可上传 PDF">
+                    <Tooltip title="添加到书架后可上传 PDF 进行 AI 分析">
                       <Button
                         type="primary"
                         size="small"

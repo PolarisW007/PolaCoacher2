@@ -160,6 +160,9 @@ async def book_import(
     async def _download_and_process(task_id: int, doc_id: int):
         from app.core.database import async_session_factory
         import httpx as _httpx
+        import logging
+        _log = logging.getLogger(__name__)
+
         async with async_session_factory() as s:
             try:
                 t = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one()
@@ -168,16 +171,34 @@ async def book_import(
                 t.progress = 10
                 await s.commit()
 
+                _log.info(f"[BookImport] 开始下载: task={task_id}, url={t.download_url}")
                 stored_name = f"{uuid.uuid4().hex}.pdf"
                 file_path = settings.UPLOAD_DIR / stored_name
                 async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
                     resp = await client.get(t.download_url)
                     resp.raise_for_status()
-                    with open(file_path, "wb") as f:
-                        f.write(resp.content)
+                    content = resp.content
 
+                content_type = resp.headers.get("content-type", "")
+                if len(content) < 1024 or (
+                    "text/html" in content_type
+                    or content[:5] in (b"<html", b"<!DOC", b"<HTML", b"<!doc")
+                ):
+                    raise ValueError(
+                        f"下载内容不是有效的 PDF 文件（content-type: {content_type}, size: {len(content)} bytes）"
+                    )
+
+                if not content[:5].startswith(b"%PDF"):
+                    raise ValueError(
+                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，content-type: {content_type}）"
+                    )
+
+                with open(file_path, "wb") as f:
+                    f.write(content)
+
+                _log.info(f"[BookImport] 下载完成: task={task_id}, size={len(content)}, path={file_path}")
                 d.file_path = str(file_path)
-                d.file_size = len(resp.content)
+                d.file_size = len(content)
                 d.status = "pending"
                 t.status = "processing"
                 t.progress = 50
@@ -187,7 +208,9 @@ async def book_import(
                 t.status = "done"
                 t.progress = 100
                 await s.commit()
+                _log.info(f"[BookImport] 处理完成: task={task_id}, doc={doc_id}")
             except Exception as e:
+                _log.error(f"[BookImport] 失败: task={task_id}, doc={doc_id}, error={e}")
                 try:
                     t2 = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one_or_none()
                     d2 = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one_or_none()
