@@ -65,7 +65,7 @@ function LectureCard({ doc }) {
               const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
               return doc.cover_url.startsWith('http')
                 ? doc.cover_url
-                : `${BASE}/api${doc.cover_url}`;
+                : `${BASE}${doc.cover_url}`;
             })()}
             alt={doc.title}
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
