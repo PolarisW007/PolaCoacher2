@@ -506,12 +506,20 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     }
   };
 
+  const [searchError, setSearchError] = useState('');
+
   const handleBookSearch = async () => {
     if (!bookQuery.trim()) return;
     setBookSearching(true);
+    setSearchError('');
     try {
       const res = await docApi.bookSearch({ query: bookQuery.trim() });
-      setBookResults(res.data?.results || res.data?.items || res.data || []);
+      const data = res.data;
+      const results = data?.results || data?.items || [];
+      setBookResults(results);
+      if (results.length === 0 && data?.search_url) {
+        setSearchError(data.error || '');
+      }
     } catch (err) {
       message.error(err.message);
     } finally {
@@ -520,7 +528,8 @@ function AddDocModal({ open, onClose, onUploadDone }) {
   };
 
   const handleBookImport = async (book) => {
-    setImportingBooks((prev) => new Set([...prev, book.isbn || book.id]));
+    const bookKey = book.md5 || book.isbn || book.id;
+    setImportingBooks((prev) => new Set([...prev, bookKey]));
     try {
       if (book.isbn) {
         try {
@@ -529,32 +538,25 @@ function AddDocModal({ open, onClose, onUploadDone }) {
             message.warning('该书已在书架中，无需重复导入');
             return;
           }
-        } catch { /* ignore check errors */ }
+        } catch { /* ignore */ }
       }
-      // 只有真正指向 PDF 文件的 URL 才作为 download_url
-      // 微信读书等平台的详情页链接不是 PDF，不能下载
-      const directDownloadUrl = book.download_url &&
-        !book.download_url.includes('weread.qq.com') &&
-        !book.download_url.includes('/bookDetail/')
-        ? book.download_url
-        : undefined;
 
-      const res = await docApi.bookImport({
+      await docApi.bookImport({
         title: book.title,
         author: book.author,
         isbn: book.isbn,
+        md5: book.md5 || undefined,
         publisher: book.publisher,
         publish_year: book.publish_year,
         language: book.language,
         file_size: book.file_size,
-        download_url: directDownloadUrl,
         cover_url: book.cover_url || null,
+        source: book.source || 'annas_archive',
       });
-      const msg = res.data?.msg || res.msg;
-      if (directDownloadUrl) {
-        message.success(`《${book.title}》正在导入中...`);
+      if (book.md5 && book.download_available !== false) {
+        message.success(`《${book.title}》正在自动下载并导入...`);
       } else {
-        message.success(`《${book.title}》已添加到书架，请手动上传 PDF 文件`);
+        message.success(`《${book.title}》已添加到书架`);
       }
       onUploadDone?.();
       handleClose();
@@ -563,7 +565,7 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     } finally {
       setImportingBooks((prev) => {
         const next = new Set(prev);
-        next.delete(book.isbn || book.id);
+        next.delete(bookKey);
         return next;
       });
     }
@@ -628,7 +630,7 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         <br />
         <Text strong>书籍搜索</Text>
         <br />
-        <Text type="secondary" style={{ fontSize: 12 }}>搜索并导入书籍</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>全球开放书库搜索 PDF</Text>
       </Card>
     </div>
   );
@@ -780,11 +782,11 @@ function AddDocModal({ open, onClose, onUploadDone }) {
   const renderBookSearch = () => (
     <div style={{ marginTop: 8 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 10, fontSize: 12 }}>
-        搜索书籍信息并添加到书架，添加后请上传对应的 PDF 文件进行 AI 分析
+        搜索全球开放书库，PDF 格式将自动下载并进行 AI 分析
       </Text>
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
         <Input
-          placeholder="输入书名、作者或 ISBN 搜索"
+          placeholder="输入书名、作者或 ISBN 搜索（支持中英文）"
           value={bookQuery}
           onChange={(e) => setBookQuery(e.target.value)}
           onPressEnter={handleBookSearch}
@@ -797,24 +799,33 @@ function AddDocModal({ open, onClose, onUploadDone }) {
 
       <Spin spinning={bookSearching}>
         {bookResults.length > 0 ? (
-          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+          <div style={{ maxHeight: 420, overflowY: 'auto' }}>
             {bookResults.map((book, idx) => {
-              const bookKey = book.isbn || book.id || idx;
+              const bookKey = book.md5 || book.isbn || idx;
+              const isPdf = book.file_type === 'pdf';
               return (
                 <Card
                   key={bookKey}
                   size="small"
-                  style={{ marginBottom: 8, borderRadius: 8 }}
+                  style={{ marginBottom: 8, borderRadius: 8, border: isPdf ? '1px solid #b7eb8f' : undefined }}
                   styles={{ body: { padding: 12 } }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-                    {book.cover_url && (
+                    {book.cover_url ? (
                       <img
                         src={book.cover_url}
                         alt={book.title}
                         style={{ width: 40, height: 56, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }}
                         onError={(e) => { e.target.style.display = 'none'; }}
                       />
+                    ) : (
+                      <div style={{
+                        width: 40, height: 56, borderRadius: 4, flexShrink: 0,
+                        background: 'linear-gradient(135deg, #667eea, #764ba2)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        <BookOutlined style={{ color: '#fff', fontSize: 18 }} />
+                      </div>
                     )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <Text strong style={{ display: 'block', marginBottom: 2 }}>{book.title}</Text>
@@ -823,29 +834,26 @@ function AddDocModal({ open, onClose, onUploadDone }) {
                           {book.author}
                         </Text>
                       )}
-                      {book.intro && (
-                        <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4, lineHeight: 1.5 }}
-                          ellipsis>
-                          {book.intro.slice(0, 60)}{book.intro.length > 60 ? '...' : ''}
-                        </Text>
-                      )}
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {book.isbn && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>ISBN: {book.isbn}</Tag>}
-                        {book.publisher && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.publisher}</Tag>}
+                        <Tag color={isPdf ? 'green' : 'default'} style={{ fontSize: 10, margin: 0, padding: '0 4px', textTransform: 'uppercase' }}>
+                          {book.file_type || 'pdf'}
+                        </Tag>
+                        {book.file_size && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.file_size}</Tag>}
                         {book.language && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.language}</Tag>}
-                        {book.publish_year && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.publish_year}年</Tag>}
-                        {book.page_count && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.page_count}页</Tag>}
+                        {book.publish_year && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.publish_year}</Tag>}
+                        {book.publisher && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.publisher.length > 20 ? book.publisher.slice(0,20) + '…' : book.publisher}</Tag>}
                       </div>
                     </div>
-                    <Tooltip title="添加到书架后可上传 PDF 进行 AI 分析">
+                    <Tooltip title={isPdf ? '导入并自动下载 PDF' : `格式为 ${book.file_type || '未知'}，仅支持 PDF 自动导入`}>
                       <Button
                         type="primary"
                         size="small"
                         icon={<ImportOutlined />}
                         loading={importingBooks.has(bookKey)}
+                        disabled={!isPdf}
                         onClick={() => handleBookImport(book)}
                       >
-                        添加
+                        {isPdf ? '导入' : book.file_type?.toUpperCase()}
                       </Button>
                     </Tooltip>
                   </div>
@@ -855,10 +863,26 @@ function AddDocModal({ open, onClose, onUploadDone }) {
           </div>
         ) : (
           !bookSearching && (
-            <Empty
-              description={bookQuery ? '未找到相关书籍，换个关键词试试' : '输入书名、作者或 ISBN 开始搜索'}
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-            />
+            <div>
+              {searchError ? (
+                <div style={{ textAlign: 'center', padding: '24px 0' }}>
+                  <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                    {searchError}
+                  </Text>
+                  <Button
+                    type="link"
+                    onClick={() => window.open(`https://annas-archive.gl/search?q=${encodeURIComponent(bookQuery)}&ext=pdf`, '_blank')}
+                  >
+                    在浏览器中打开搜索
+                  </Button>
+                </div>
+              ) : (
+                <Empty
+                  description={bookQuery ? '未找到相关 PDF 书籍，换个关键词试试' : '输入书名、作者或 ISBN 开始搜索'}
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                />
+              )}
+            </div>
           )
         )}
       </Spin>

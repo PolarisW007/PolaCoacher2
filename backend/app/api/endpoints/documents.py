@@ -37,6 +37,88 @@ def _allowed_ext(filename: str) -> bool:
 # ---- 固定路径路由必须在 /{doc_id} 之前，否则会被路径参数拦截 ----
 
 
+def _parse_annas_archive_html(html_text: str) -> list[dict]:
+    """解析 Anna's Archive 搜索结果 HTML，提取书籍信息"""
+    import re
+    from html import unescape
+
+    results = []
+    seen_md5: set[str] = set()
+
+    for md5_match in re.finditer(r'href="/md5/([a-f0-9]{32})"', html_text):
+        md5 = md5_match.group(1)
+        if md5 in seen_md5:
+            continue
+        seen_md5.add(md5)
+
+        pos = md5_match.start()
+        block_start = html_text.rfind('<div', max(0, pos - 2000), pos)
+        block_end = html_text.find('base score:', pos)
+        if block_start < 0:
+            block_start = max(0, pos - 1500)
+        if block_end < 0:
+            block_end = min(len(html_text), pos + 2000)
+        block = html_text[block_start:block_end + 200]
+
+        title_m = re.search(
+            r'<a[^>]+href="/md5/' + md5 + r'"[^>]*>([^<]+)</a>', block
+        )
+        title = unescape(title_m.group(1).strip()) if title_m else ""
+        if not title:
+            continue
+
+        author = ""
+        author_m = re.search(
+            r'<a[^>]+href="/search\?q=[^"]*"[^>]*>([^<]+)</a>', block
+        )
+        if author_m:
+            author = unescape(author_m.group(1).strip())
+
+        publisher = ""
+        pub_matches = re.findall(
+            r'<a[^>]+href="/search\?q=[^"]*"[^>]*>([^<]+)</a>', block
+        )
+        if len(pub_matches) > 1:
+            publisher = unescape(pub_matches[1].strip())
+
+        meta_m = re.search(
+            r'([\w\s]+\[[\w-]+\])\s*·\s*(\w+)\s*·\s*([\d.]+\s*[KMGT]?B)'
+            r'\s*·?\s*(\d{4})?',
+            block,
+        )
+        lang_str = meta_m.group(1).strip() if meta_m else ""
+        file_type = meta_m.group(2).strip().lower() if meta_m else ""
+        file_size = meta_m.group(3).strip() if meta_m else ""
+        year = meta_m.group(4) if meta_m and meta_m.group(4) else ""
+
+        cover_url = ""
+        cover_m = re.search(r'<img[^>]+src="(https?://[^"]+)"', block)
+        if cover_m:
+            cover_url = cover_m.group(1)
+
+        isbn = ""
+        isbn_m = re.search(r'"isbns":\["(\d{10,13})"', block)
+        if isbn_m:
+            isbn = isbn_m.group(1)
+
+        results.append({
+            "md5": md5,
+            "title": title,
+            "author": author,
+            "isbn": isbn,
+            "publisher": publisher,
+            "publish_year": int(year) if year and year.isdigit() else None,
+            "language": lang_str.split("[")[0].strip() if lang_str else "",
+            "cover_url": cover_url or None,
+            "file_type": file_type,
+            "file_size": file_size,
+            "link": f"https://annas-archive.gl/md5/{md5}",
+            "source": "annas_archive",
+            "download_available": file_type == "pdf",
+        })
+    return results
+
+
 @router.get("/book-search", response_model=ApiResponse)
 async def book_search(
     query: str = Query(..., min_length=1),
@@ -45,58 +127,70 @@ async def book_search(
     page: int = Query(1, ge=1),
     user: User = Depends(get_current_user),
 ):
-    """使用微信读书公开搜索 API 查询书籍元数据"""
+    """通过 Anna's Archive 搜索书籍（多路径尝试）"""
     import httpx as _httpx
+    import logging
+    from urllib.parse import quote
 
-    try:
-        count = 20
-        max_idx = (page - 1) * count
+    _log = logging.getLogger(__name__)
+    encoded_query = quote(query)
 
-        async with _httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(
-                "https://weread.qq.com/web/search/global",
-                params={
-                    "keyword": query,
-                    "maxIdx": max_idx,
-                    "lang": "zh" if not language else language,
-                    "count": count,
-                },
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    "Referer": "https://weread.qq.com/",
-                },
-            )
-            if resp.status_code != 200:
-                return ApiResponse.ok(data={"results": [], "total": 0, "page": page})
-            data = resp.json()
+    search_urls = [
+        f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf",
+        f"https://annas-archive.se/search?q={encoded_query}&ext=pdf",
+        f"https://annas-archive.org/search?q={encoded_query}&ext=pdf",
+    ]
 
-        books = data.get("books", [])
-        results = []
-        for item in books:
-            bi = item.get("bookInfo", {})
-            if not bi.get("title"):
-                continue
-            cover = bi.get("cover", "")
-            # 微信读书封面 URL 补全
-            if cover and not cover.startswith("http"):
-                cover = f"https:{cover}"
-            results.append({
-                "title": bi.get("title", ""),
-                "author": bi.get("author", ""),
-                "isbn": bi.get("isbn") or "",
-                "publisher": bi.get("publisher", ""),
-                "publish_year": bi.get("publishTime", "")[:4] if bi.get("publishTime") else None,
-                "language": "zh",
-                "cover_url": cover or None,
-                "intro": (bi.get("intro") or "")[:200],
-                "link": f"https://weread.qq.com/web/bookDetail/{bi.get('bookId', '')}",
-                "source": "weread",
-            })
+    proxy_templates = [
+        "https://api.allorigins.win/raw?url={url}",
+        "https://api.codetabs.com/v1/proxy?quest={url}",
+    ]
 
-        total = data.get("total", len(results))
-        return ApiResponse.ok(data={"results": results, "total": total, "page": page})
-    except Exception as e:
-        return ApiResponse.ok(data={"results": [], "total": 0, "page": page, "error": str(e)})
+    all_urls = []
+    for su in search_urls:
+        all_urls.append(su)
+    for su in search_urls[:1]:
+        for pt in proxy_templates:
+            all_urls.append(pt.format(url=quote(su)))
+
+    _log.info(f"[BookSearch] query='{query}', trying {len(all_urls)} URLs")
+    html_text = ""
+
+    for url in all_urls:
+        try:
+            async with _httpx.AsyncClient(
+                timeout=15, follow_redirects=True, verify=False
+            ) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36"
+                        ),
+                    },
+                )
+                if resp.status_code == 200 and '/md5/' in resp.text:
+                    html_text = resp.text
+                    _log.info(f"[BookSearch] Success via {url[:60]}...")
+                    break
+        except Exception as e:
+            _log.debug(f"[BookSearch] Failed {url[:50]}: {e}")
+            continue
+
+    if not html_text:
+        _log.warning("[BookSearch] All sources failed, returning empty")
+        return ApiResponse.ok(
+            data={"results": [], "total": 0, "page": page,
+                  "search_url": f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf",
+                  "error": "搜索服务暂时不可用，请在浏览器中打开链接手动搜索"}
+        )
+
+    results = _parse_annas_archive_html(html_text)
+    _log.info(f"[BookSearch] Found {len(results)} results for '{query}'")
+    return ApiResponse.ok(
+        data={"results": results, "total": len(results), "page": page}
+    )
 
 
 @router.post("/book-import", response_model=ApiResponse)
@@ -106,6 +200,8 @@ async def book_import(
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.social import BookImportTask
+    import logging
+    _log = logging.getLogger(__name__)
 
     if req.isbn:
         existing = await db.execute(
@@ -114,7 +210,14 @@ async def book_import(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="该书已在书架中")
 
-    has_download = bool(req.download_url and req.download_url.startswith("http"))
+    can_auto_download = bool(req.md5 and len(req.md5) == 32)
+    has_direct_url = bool(req.download_url and req.download_url.startswith("http"))
+
+    source_url = ""
+    if req.md5:
+        source_url = f"https://annas-archive.gl/md5/{req.md5}"
+    elif req.download_url:
+        source_url = req.download_url
 
     doc = Document(
         user_id=user.id,
@@ -123,44 +226,44 @@ async def book_import(
         file_path="",
         file_size=req.file_size,
         file_type="pdf",
-        source_type="book_search",
-        source_url=req.download_url or "",
+        source_type=req.source or "book_search",
+        source_url=source_url,
         isbn=req.isbn,
         author=req.author,
         publisher=req.publisher,
         publish_year=req.publish_year,
         language=req.language,
         cover_url=req.cover_url or None,
-        status="importing" if has_download else "pending_upload",
+        status="importing" if (can_auto_download or has_direct_url) else "pending_upload",
     )
     db.add(doc)
     await db.flush()
 
-    if not has_download:
+    if not can_auto_download and not has_direct_url:
         await db.commit()
         return ApiResponse.ok(
             data={"document_id": doc.id},
             msg="书籍已添加到书架，请上传对应的 PDF 文件",
         )
 
+    download_url = req.download_url or ""
     task = BookImportTask(
         user_id=user.id,
         document_id=doc.id,
         isbn=req.isbn,
         title=req.title,
         author=req.author,
-        download_url=req.download_url,
+        download_url=download_url,
         file_size=req.file_size,
         status="pending",
     )
     db.add(task)
     await db.flush()
 
-    async def _download_and_process(task_id: int, doc_id: int):
+    async def _download_and_process(task_id: int, doc_id: int, md5: str | None):
         from app.core.database import async_session_factory
         import httpx as _httpx
-        import logging
-        _log = logging.getLogger(__name__)
+        import re as _re
 
         async with async_session_factory() as s:
             try:
@@ -170,13 +273,41 @@ async def book_import(
                 t.progress = 10
                 await s.commit()
 
-                _log.info(f"[BookImport] 开始下载: task={task_id}, url={t.download_url}")
                 stored_name = f"{uuid.uuid4().hex}.pdf"
                 file_path = settings.UPLOAD_DIR / stored_name
-                async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-                    resp = await client.get(t.download_url)
-                    resp.raise_for_status()
-                    content = resp.content
+                content = None
+                _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+                if md5:
+                    _log.info(f"[BookImport] 从 Libgen 下载 md5={md5}")
+                    async with _httpx.AsyncClient(timeout=60, follow_redirects=True, verify=False) as client:
+                        ads_resp = await client.get(
+                            f"https://libgen.li/ads.php?md5={md5}",
+                            headers={"User-Agent": _ua},
+                        )
+                        ads_resp.raise_for_status()
+                        get_m = _re.search(
+                            r'href="(get\.php\?md5=[a-f0-9]+&key=[^"]+)"',
+                            ads_resp.text,
+                        )
+                        if not get_m:
+                            raise ValueError("无法从 Libgen 获取下载链接")
+                        get_url = f"https://libgen.li/{get_m.group(1)}"
+                        _log.info(f"[BookImport] 获取到下载链接: {get_url[:80]}")
+
+                    t.progress = 30
+                    await s.commit()
+
+                    async with _httpx.AsyncClient(timeout=300, follow_redirects=True, verify=False) as client:
+                        resp = await client.get(get_url, headers={"User-Agent": _ua})
+                        resp.raise_for_status()
+                        content = resp.content
+                else:
+                    _log.info(f"[BookImport] 直接下载: url={t.download_url}")
+                    async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+                        resp = await client.get(t.download_url, headers={"User-Agent": _ua})
+                        resp.raise_for_status()
+                        content = resp.content
 
                 content_type = resp.headers.get("content-type", "")
                 if len(content) < 1024 or (
@@ -184,12 +315,12 @@ async def book_import(
                     or content[:5] in (b"<html", b"<!DOC", b"<HTML", b"<!doc")
                 ):
                     raise ValueError(
-                        f"下载内容不是有效的 PDF 文件（content-type: {content_type}, size: {len(content)} bytes）"
+                        f"下载内容不是有效的 PDF（content-type: {content_type}, size: {len(content)}）"
                     )
 
                 if not content[:5].startswith(b"%PDF"):
                     raise ValueError(
-                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，content-type: {content_type}）"
+                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}）"
                     )
 
                 with open(file_path, "wb") as f:
@@ -222,8 +353,8 @@ async def book_import(
                 except Exception:
                     pass
 
-    asyncio.create_task(_download_and_process(task.id, doc.id))
-    return ApiResponse.ok(data={"task_id": task.id, "document_id": doc.id}, msg="导入任务已创建")
+    asyncio.create_task(_download_and_process(task.id, doc.id, req.md5))
+    return ApiResponse.ok(data={"task_id": task.id, "document_id": doc.id}, msg="导入任务已创建，正在自动下载 PDF")
 
 
 @router.get("/book-import/{task_id}/status", response_model=ApiResponse)

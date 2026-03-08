@@ -103,9 +103,11 @@ class BookImportRequest(BaseModel):
     title: str
     author: str | None = None
     isbn: str | None = None
+    md5: str | None = None
     download_url: str | None = None
-    cover_url: str | None = None  # 来自书籍搜索（如微信读书）的封面 URL
+    cover_url: str | None = None
     file_size: int = 0
     publisher: str | None = None
     publish_year: int | None = None
     language: str | None = None
+    source: str | None = None
