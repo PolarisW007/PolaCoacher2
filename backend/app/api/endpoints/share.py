@@ -71,21 +71,39 @@ async def generate_xhs_post(
     db.add(post)
     await db.flush()
 
-    # 异步生成封面图
+    await db.commit()
+
     if post.cover_prompt:
         import asyncio
+        post_id = post.id
 
         async def _gen_cover():
-            from app.services.ai_service import generate_cover_image
-
-            url = await generate_cover_image(
-                post.cover_prompt,
-                str(settings.COVER_DIR),
-                f"xhs_{post.id}.png",
-            )
-            if url:
-                post.cover_url = url
-                post.image_status = "ready"
+            from app.services.ai_service import generate_cover_image, generate_image_prompt
+            from app.core.database import async_session_factory
+            import logging
+            _log = logging.getLogger(__name__)
+            try:
+                img_prompt = await generate_image_prompt(
+                    title=doc.title or "",
+                    summary=summary,
+                    key_points=key_points if isinstance(key_points, list) else [],
+                )
+                _log.info(f"[XHS] post={post_id} 生成图片prompt: {img_prompt[:100]}...")
+                url = await generate_cover_image(
+                    img_prompt, str(settings.COVER_DIR), f"xhs_{post_id}.png",
+                )
+                if url:
+                    async with async_session_factory() as s:
+                        from sqlalchemy import update
+                        await s.execute(
+                            update(XhsPost).where(XhsPost.id == post_id).values(
+                                cover_url=url, image_status="ready"
+                            )
+                        )
+                        await s.commit()
+                    _log.info(f"[XHS] post={post_id} 封面图生成成功: {url}")
+            except Exception as e:
+                _log.error(f"[XHS] post={post_id} 封面图生成失败: {e}")
 
         asyncio.create_task(_gen_cover())
 
@@ -131,21 +149,39 @@ async def generate_moments_post(
     db.add(post)
     await db.flush()
 
-    # 异步生成封面图
+    await db.commit()
+
     if post.cover_prompt:
         import asyncio
+        post_id = post.id
 
         async def _gen_cover():
-            from app.services.ai_service import generate_cover_image
-
-            url = await generate_cover_image(
-                post.cover_prompt,
-                str(settings.COVER_DIR),
-                f"moments_{post.id}.png",
-            )
-            if url:
-                post.cover_url = url
-                post.image_status = "ready"
+            from app.services.ai_service import generate_cover_image, generate_image_prompt
+            from app.core.database import async_session_factory
+            import logging
+            _log = logging.getLogger(__name__)
+            try:
+                img_prompt = await generate_image_prompt(
+                    title=doc.title or "",
+                    summary=summary,
+                    key_points=key_points if isinstance(key_points, list) else [],
+                )
+                _log.info(f"[Moments] post={post_id} 生成图片prompt: {img_prompt[:100]}...")
+                url = await generate_cover_image(
+                    img_prompt, str(settings.COVER_DIR), f"moments_{post_id}.png",
+                )
+                if url:
+                    async with async_session_factory() as s:
+                        from sqlalchemy import update
+                        await s.execute(
+                            update(MomentsPost).where(MomentsPost.id == post_id).values(
+                                cover_url=url, image_status="ready"
+                            )
+                        )
+                        await s.commit()
+                    _log.info(f"[Moments] post={post_id} 封面图生成成功: {url}")
+            except Exception as e:
+                _log.error(f"[Moments] post={post_id} 封面图生成失败: {e}")
 
         asyncio.create_task(_gen_cover())
 

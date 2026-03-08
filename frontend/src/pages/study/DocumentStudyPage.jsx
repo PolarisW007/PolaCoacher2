@@ -664,7 +664,26 @@ export default function DocumentStudyPage() {
       const res = type === 'xhs'
         ? await docApi.shareXhs(id)
         : await docApi.shareMoments(id);
-      setSharePost(res.data);
+      const post = res.data;
+      setSharePost(post);
+
+      // 封面图异步生成，轮询等待（最多 60s）
+      if (post && !post.cover_url && post.id) {
+        const prefix = type === 'xhs' ? 'xhs' : 'moments';
+        const coverPath = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/covers/${prefix}_${post.id}.png`;
+        let tries = 0;
+        const poll = setInterval(async () => {
+          tries++;
+          try {
+            const r = await fetch(coverPath, { method: 'HEAD' });
+            if (r.ok) {
+              setSharePost(prev => prev ? { ...prev, cover_url: `/covers/${prefix}_${post.id}.png`, image_status: 'ready' } : prev);
+              clearInterval(poll);
+            }
+          } catch { /* ignore */ }
+          if (tries >= 30) clearInterval(poll);
+        }, 2000);
+      }
     } catch (err) {
       message.error(err.message || '生成分享内容失败');
       setShareModalOpen(false);
@@ -1467,20 +1486,14 @@ export default function DocumentStudyPage() {
                 </Button>
                 <Button
                   icon={<HeartOutlined style={{ color: '#ff2442' }} />}
-                  onClick={() => {
-                    handleCopyCompletionText();
-                    setTimeout(() => window.open('https://www.xiaohongshu.com', '_blank'), 500);
-                  }}
+                  onClick={() => { setCompletionModalOpen(false); handleShare('xhs'); }}
                   style={{ flex: 1, borderColor: '#ff2442', color: '#ff2442' }}
                 >
                   分享小红书
                 </Button>
                 <Button
                   icon={<WechatOutlined style={{ color: '#07c160' }} />}
-                  onClick={() => {
-                    handleCopyCompletionText();
-                    message.success('已复制，打开微信朋友圈粘贴发布');
-                  }}
+                  onClick={() => { setCompletionModalOpen(false); handleShare('moments'); }}
                   style={{ flex: 1, borderColor: '#07c160', color: '#07c160' }}
                 >
                   朋友圈
@@ -1526,10 +1539,17 @@ export default function DocumentStudyPage() {
             {sharePost.cover_url && (
               <div style={{ textAlign: 'center' }}>
                 <img
-                  src={sharePost.cover_url}
+                  src={sharePost.cover_url.startsWith('http') ? sharePost.cover_url : `${import.meta.env.BASE_URL.replace(/\/$/, '')}${sharePost.cover_url}`}
                   alt="封面图"
                   style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 10, objectFit: 'cover' }}
+                  onError={(e) => { e.target.style.display = 'none'; }}
                 />
+              </div>
+            )}
+            {!sharePost.cover_url && sharePost.image_status !== 'ready' && (
+              <div style={{ textAlign: 'center', padding: '24px 0', background: '#f9f9f9', borderRadius: 10 }}>
+                <Spin size="small" />
+                <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>封面图生成中...</div>
               </div>
             )}
             <div>
