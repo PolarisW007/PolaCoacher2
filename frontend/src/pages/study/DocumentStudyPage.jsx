@@ -1093,83 +1093,89 @@ export default function DocumentStudyPage() {
         </Space>
 
         {hasLecture && (
-          <Space size={6} style={{ flex: '0 1 auto', alignItems: 'center' }}>
-            <Select size="small" style={{ width: 100 }} value={selectedVoice} onChange={setSelectedVoice} placeholder="语音"
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <Select size="small" style={{ width: 96 }} value={selectedVoice} onChange={setSelectedVoice} placeholder="语音"
               options={voices.map(v => ({ label: v.label || v.name || v.id || v, value: v.id || v.name || v }))}
             />
 
-            {/* ⏮ 上一页 */}
-            <Tooltip title="上一页（← 键）">
-              <Button
-                shape="circle"
-                size="large"
-                icon={<LeftOutlined />}
-                disabled={!hasPrev}
-                onClick={() => setCurrentPage(p => p - 1)}
-                style={{ fontSize: 16, height: 44, width: 44, border: '2px solid #d9d9d9' }}
-              />
-            </Tooltip>
+            {/* 播放控制区：上一页 + 播放 + 下一页 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f5f5f5', borderRadius: 24, padding: '4px 8px' }}>
+              {/* ⏮ 上一页 */}
+              <Tooltip title="上一页（← 键）">
+                <button
+                  disabled={!hasPrev}
+                  onClick={() => setCurrentPage(p => p - 1)}
+                  style={{
+                    width: 32, height: 32, borderRadius: '50%', border: 'none',
+                    background: hasPrev ? '#fff' : 'transparent',
+                    boxShadow: hasPrev ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
+                    cursor: hasPrev ? 'pointer' : 'not-allowed',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: hasPrev ? '#333' : '#bbb', fontSize: 13, flexShrink: 0,
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <LeftOutlined />
+                </button>
+              </Tooltip>
 
-            {/* ▶ 播放 — 醒目大按钮 */}
-            <Button
-              type="primary"
-              shape="round"
-              size="large"
-              icon={isPlaying ? <PauseCircleOutlined style={{ fontSize: 22 }} /> : <PlayCircleOutlined style={{ fontSize: 22 }} />}
-              loading={audioLoading}
-              onClick={handlePlayPause}
-              style={{
-                height: 48,
-                paddingInline: 24,
-                fontSize: 16,
-                fontWeight: 700,
-                letterSpacing: 1,
-                background: isPlaying
-                  ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
-                  : 'linear-gradient(135deg, #2dce89 0%, #1a7a52 100%)',
-                border: 'none',
-                boxShadow: isPlaying
-                  ? '0 4px 16px rgba(245,87,108,0.5)'
-                  : '0 4px 16px rgba(45,206,137,0.5)',
-                transition: 'all 0.25s',
-              }}
-            >
-              {audioLoading ? '加载中' : isPlaying ? '⏸ 暂停' : '▶ 播放'}
-            </Button>
-
-            {/* ⏭ 下一页 */}
-            <Tooltip title={hasNext ? '下一页（→ 键）' : '已到最后一页'}>
-              <Button
-                shape="circle"
-                size="large"
-                icon={hasNext ? <RightOutlined /> : <TrophyOutlined style={{ color: '#faad14' }} />}
-                onClick={() => {
-                  if (hasNext) setCurrentPage(p => p + 1);
-                  else handleShowCompletion();
-                }}
+              {/* ▶ 播放主按钮 */}
+              <button
+                disabled={audioLoading}
+                onClick={handlePlayPause}
                 style={{
-                  fontSize: 16, height: 44, width: 44,
-                  border: hasNext ? '2px solid #d9d9d9' : '2px solid #faad14',
+                  height: 40, paddingInline: 20, borderRadius: 20, border: 'none',
+                  display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                  cursor: audioLoading ? 'wait' : 'pointer',
+                  background: isPlaying
+                    ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
+                    : 'linear-gradient(135deg, #2dce89 0%, #1a7a52 100%)',
+                  color: '#fff', fontSize: 14, fontWeight: 700,
+                  boxShadow: isPlaying
+                    ? '0 3px 12px rgba(245,87,108,0.45)'
+                    : '0 3px 12px rgba(45,206,137,0.45)',
+                  transition: 'all 0.25s',
                 }}
-              />
-            </Tooltip>
+              >
+                {audioLoading
+                  ? <Spin size="small" style={{ color: '#fff' }} />
+                  : isPlaying
+                    ? <><PauseCircleOutlined style={{ fontSize: 18 }} /> 暂停</>
+                    : <><PlayCircleOutlined style={{ fontSize: 18 }} /> 播放</>
+                }
+              </button>
 
-            <Select size="small" style={{ width: 68 }} value={playbackRate} onChange={setPlaybackRate} options={RATE_OPTIONS} />
-            <Tooltip title="音量">
-              <Space size={4} style={{ display: 'flex', alignItems: 'center' }}>
-                <SoundOutlined style={{ fontSize: 14, color: '#999' }} />
-                <Slider min={0} max={1} step={0.05} value={volume} onChange={setVolume}
-                  tooltip={{ formatter: v => `${Math.round(v * 100)}%` }} style={{ width: 60, margin: 0 }}
-                />
-              </Space>
-            </Tooltip>
-            <Tooltip title="音频结束后自动播放下一页">
-              <Space size={4}>
-                <Text type="secondary" style={{ fontSize: 12 }}>自动</Text>
-                <Switch size="small" checked={autoPlayNext} onChange={setAutoPlayNext} />
-              </Space>
-            </Tooltip>
-          </Space>
+              {/* ⏭ 下一页 */}
+              <Tooltip title={hasNext ? '下一页（→ 键）' : '读完了！'}>
+                <button
+                  onClick={() => { if (hasNext) setCurrentPage(p => p + 1); else handleShowCompletion(); }}
+                  style={{
+                    width: 32, height: 32, borderRadius: '50%', border: 'none',
+                    background: '#fff',
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+                    cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: hasNext ? '#333' : '#faad14', fontSize: 13, flexShrink: 0,
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {hasNext ? <RightOutlined /> : <TrophyOutlined />}
+                </button>
+              </Tooltip>
+            </div>
+
+            <Select size="small" style={{ width: 64 }} value={playbackRate} onChange={setPlaybackRate} options={RATE_OPTIONS} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <SoundOutlined style={{ fontSize: 13, color: '#999' }} />
+              <Slider min={0} max={1} step={0.05} value={volume} onChange={setVolume}
+                tooltip={{ formatter: v => `${Math.round(v * 100)}%` }} style={{ width: 56, margin: 0 }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>自动</Text>
+              <Switch size="small" checked={autoPlayNext} onChange={setAutoPlayNext} />
+            </div>
+          </div>
         )}
 
         <Space size={8}>
