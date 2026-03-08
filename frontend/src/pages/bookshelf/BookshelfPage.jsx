@@ -60,6 +60,7 @@ const { Title, Text, Paragraph } = Typography;
 const statusMap = {
   importing: { color: 'blue', text: '导入中' },
   pending: { color: 'gold', text: '等待处理' },
+  pending_upload: { color: 'orange', text: '待上传 PDF' },
   processing: { color: 'processing', text: 'AI 处理中' },
   ready: { color: 'green', text: '已就绪' },
   error: { color: 'red', text: '处理失败' },
@@ -167,6 +168,8 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
   const handleCardClick = () => {
     if (selectable) {
       onSelect?.(doc.id);
+    } else if (doc.status === 'pending_upload') {
+      message.info('请先上传 PDF 文件');
     } else {
       navigate(`/study/${doc.id}`);
     }
@@ -290,6 +293,35 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
               {doc.processing_step || getProgressLabel(doc.progress || 0)}
             </Text>
           )}
+        </div>
+      )}
+
+      {(doc.status === 'pending_upload' || (doc.status === 'error' && doc.source_type === 'book_search')) && (
+        <div style={{ marginTop: 8 }}>
+          <Upload
+            accept=".pdf"
+            showUploadList={false}
+            beforeUpload={(file) => {
+              docApi.uploadPdf(doc.id, file).then(() => {
+                message.success('PDF 已上传，开始处理');
+                onRefresh?.();
+              }).catch((err) => {
+                message.error(err.response?.data?.detail || '上传失败');
+              });
+              return false;
+            }}
+          >
+            <Button
+              type="dashed"
+              size="small"
+              icon={<UploadOutlined />}
+              block
+              style={{ borderColor: '#faad14', color: '#faad14' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              上传 PDF 文件
+            </Button>
+          </Upload>
         </div>
       )}
 

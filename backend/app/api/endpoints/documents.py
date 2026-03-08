@@ -130,18 +130,17 @@ async def book_import(
         publisher=req.publisher,
         publish_year=req.publish_year,
         language=req.language,
-        cover_url=req.cover_url or None,  # 直接复用书籍搜索返回的封面 URL
-        status="importing" if has_download else "error",
+        cover_url=req.cover_url or None,
+        status="importing" if has_download else "pending_upload",
     )
     db.add(doc)
     await db.flush()
 
     if not has_download:
-        # 仅保存元数据，无法自动下载，返回提示让用户手动上传
         await db.commit()
         return ApiResponse.ok(
             data={"document_id": doc.id},
-            msg="书籍元数据已保存，请在书架中手动上传 PDF 文件",
+            msg="书籍已添加到书架，请上传对应的 PDF 文件",
         )
 
     task = BookImportTask(
@@ -383,6 +382,48 @@ async def upload_document(
 
     asyncio.create_task(_deferred_processing())
     return ApiResponse.ok(data=result)
+
+
+@router.post("/{doc_id}/upload-pdf", response_model=ApiResponse)
+async def upload_pdf_for_existing(
+    doc_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """为已有的 pending_upload 文档补充上传 PDF 文件"""
+    result = await db.execute(
+        select(Document).where(Document.id == doc_id, Document.user_id == user.id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    if doc.status not in ("pending_upload", "error"):
+        raise HTTPException(status_code=400, detail="该文档无需上传文件")
+
+    if not file.filename or not _allowed_ext(file.filename):
+        raise HTTPException(status_code=400, detail="不支持的文件格式")
+
+    content = await file.read()
+    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件大小超过限制")
+
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    stored_name = f"{uuid.uuid4().hex}.{ext}"
+    file_path = settings.UPLOAD_DIR / stored_name
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    doc.file_path = str(file_path)
+    doc.file_size = len(content)
+    doc.file_type = ext
+    doc.filename = file.filename
+    doc.status = "pending"
+    await db.commit()
+
+    asyncio.create_task(process_document(doc_id))
+    return ApiResponse.ok(data={"document_id": doc_id}, msg="PDF 已上传，开始 AI 处理")
 
 
 @router.get("/list", response_model=ApiResponse[PaginatedData[DocumentOut]])

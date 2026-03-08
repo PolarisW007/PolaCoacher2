@@ -27,6 +27,14 @@ export const docApi = {
   getLecture: (id) => client.get(`/documents/${id}/lecture`),
   getFileUrl: (id) => client.get(`/documents/${id}/file-url`),
   getPdf: (id) => `${BASE}/api/documents/${id}/pdf`,
+  uploadPdf: (id, file, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post(`/documents/${id}/upload-pdf`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: onProgress,
+    });
+  },
   generateCover: (id) => client.post(`/documents/${id}/generate-cover`),
   completionCard: (id) => client.post(`/documents/${id}/completion-card`),
   chat: (id, data) => client.post(`/documents/${id}/chat`, data),
