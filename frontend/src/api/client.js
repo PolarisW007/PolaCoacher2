@@ -33,7 +33,10 @@ client.interceptors.response.use(
         window.location.href = loginPath;
       }
     }
-    const msg = err.response?.data?.detail || err.response?.data?.msg || err.message;
+    let msg = err.response?.data?.detail || err.response?.data?.msg || err.message;
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e) => e.msg || JSON.stringify(e)).join('; ') : JSON.stringify(msg);
+    }
     return Promise.reject(new Error(msg));
   }
 );

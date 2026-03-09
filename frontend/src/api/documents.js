@@ -12,10 +12,11 @@ export const docApi = {
     });
   },
   importUrl: (data) => client.post('/documents/import-url', data),
-  bookSearch: (params) => client.get('/documents/book-search', { params }),
+  bookSearch: (params) => client.get('/documents/book-search', { params, timeout: 90000 }),
   bookImport: (data) => client.post('/documents/book-import', data),
   bookImportStatus: (taskId) => client.get(`/documents/book-import/${taskId}/status`),
   bookImportRetry: (taskId) => client.post(`/documents/book-import/${taskId}/retry`),
+  retryDownload: (docId) => client.post(`/documents/${docId}/retry-download`),
   checkIsbn: (isbn) => client.get(`/documents/check-isbn/${isbn}`),
   list: (params) => client.get('/documents/list', { params }),
   get: (id) => client.get(`/documents/${id}`),

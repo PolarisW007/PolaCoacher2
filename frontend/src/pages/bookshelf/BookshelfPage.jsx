@@ -58,9 +58,9 @@ import { useAuth } from '../../store/AuthContext';
 const { Title, Text, Paragraph } = Typography;
 
 const statusMap = {
-  importing: { color: 'blue', text: '导入中' },
+  importing: { color: 'blue', text: 'PDF 下载中' },
   pending: { color: 'gold', text: '等待处理' },
-  pending_upload: { color: 'orange', text: '待上传 PDF' },
+  pending_upload: { color: 'red', text: '下载失败' },
   processing: { color: 'processing', text: 'AI 处理中' },
   ready: { color: 'green', text: '已就绪' },
   error: { color: 'red', text: '处理失败' },
@@ -286,7 +286,7 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
             percent={Math.round(doc.progress || 0)}
             size="small"
             strokeColor={{ '0%': '#2dce89', '100%': '#52c41a' }}
-            format={(p) => (doc.status === 'pending' ? '排队中' : doc.status === 'importing' ? '导入中' : `${p}%`)}
+            format={(p) => (doc.status === 'pending' ? '排队中' : doc.status === 'importing' ? 'PDF下载中...' : `${p}%`)}
           />
           {doc.status === 'processing' && (
             <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
@@ -298,6 +298,26 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
 
       {(doc.status === 'pending_upload' || (doc.status === 'error' && doc.source_type === 'book_search')) && (
         <div style={{ marginTop: 8 }}>
+          {doc.source_url?.includes('/md5/') && (
+            <Button
+              type="primary"
+              size="small"
+              icon={<ReloadOutlined />}
+              block
+              style={{ marginBottom: 6 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                docApi.retryDownload(doc.id).then(() => {
+                  message.success('正在重新下载 PDF，请稍候...');
+                  onRefresh?.();
+                }).catch((err) => {
+                  message.error(err.message || '重试失败');
+                });
+              }}
+            >
+              重新自动下载
+            </Button>
+          )}
           <Upload
             accept=".pdf"
             showUploadList={false}
@@ -319,7 +339,7 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
               style={{ borderColor: '#faad14', color: '#faad14' }}
               onClick={(e) => e.stopPropagation()}
             >
-              上传 PDF 文件
+              手动上传 PDF
             </Button>
           </Upload>
         </div>

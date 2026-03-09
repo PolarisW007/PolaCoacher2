@@ -274,14 +274,31 @@ async def _generate_cover_for_doc(doc_id: int) -> None:
             doc = result.scalar_one_or_none()
             if not doc:
                 return
-            # 已有封面且文件存在则直接跳过
-            if doc.cover_url:
-                import os
-                cover_filename = f"doc_{doc_id}_cover.png"
-                cover_path = settings.COVER_DIR / cover_filename
-                if cover_path.exists():
-                    logger.info(f"[Doc {doc_id}] 封面图已存在，跳过生成")
-                    return
+            cover_filename = f"doc_{doc_id}_cover.png"
+            cover_path = settings.COVER_DIR / cover_filename
+
+            if doc.cover_url and cover_path.exists():
+                logger.info(f"[Doc {doc_id}] 封面图已存在于本地，跳过生成")
+                return
+
+            if doc.cover_url and doc.cover_url.startswith("http"):
+                try:
+                    import httpx as _httpx
+                    async with _httpx.AsyncClient(timeout=15, verify=False) as _c:
+                        _r = await _c.get(doc.cover_url)
+                        if _r.status_code == 200 and len(_r.content) > 500:
+                            settings.COVER_DIR.mkdir(parents=True, exist_ok=True)
+                            ext = "jpg" if b"\xff\xd8\xff" in _r.content[:4] else "png"
+                            cover_filename = f"doc_{doc_id}_cover.{ext}"
+                            cover_path = settings.COVER_DIR / cover_filename
+                            with open(cover_path, "wb") as _f:
+                                _f.write(_r.content)
+                            doc.cover_url = f"/covers/{cover_filename}"
+                            await db.commit()
+                            logger.info(f"[Doc {doc_id}] 已下载外部封面图并保存: {cover_filename}")
+                            return
+                except Exception as ex:
+                    logger.warning(f"[Doc {doc_id}] 下载外部封面失败: {ex}，将使用 AI 生成")
 
             title = doc.title or "文档"
             summary = (doc.summary or "")[:300]

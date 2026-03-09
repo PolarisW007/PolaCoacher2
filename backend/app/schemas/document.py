@@ -22,6 +22,7 @@ class DocumentOut(BaseModel):
     file_size: int
     file_type: str
     source_type: str
+    source_url: str | None = None
     page_count: int
     word_count: int
     summary: str | None = None
@@ -106,7 +107,7 @@ class BookImportRequest(BaseModel):
     md5: str | None = None
     download_url: str | None = None
     cover_url: str | None = None
-    file_size: int = 0
+    file_size: str | int = 0
     publisher: str | None = None
     publish_year: int | None = None
     language: str | None = None

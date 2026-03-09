@@ -135,23 +135,13 @@ async def book_search(
     _log = logging.getLogger(__name__)
     encoded_query = quote(query)
 
-    search_urls = [
-        f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf",
-        f"https://annas-archive.se/search?q={encoded_query}&ext=pdf",
-        f"https://annas-archive.org/search?q={encoded_query}&ext=pdf",
-    ]
+    base_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf"
 
-    proxy_templates = [
-        "https://api.allorigins.win/raw?url={url}",
-        "https://api.codetabs.com/v1/proxy?quest={url}",
+    all_urls = [
+        f"https://api.codetabs.com/v1/proxy/?quest={quote(base_url, safe='')}",
+        f"https://api.allorigins.win/raw?url={quote(base_url, safe='')}",
+        base_url,
     ]
-
-    all_urls = []
-    for su in search_urls:
-        all_urls.append(su)
-    for su in search_urls[:1]:
-        for pt in proxy_templates:
-            all_urls.append(pt.format(url=quote(su)))
 
     _log.info(f"[BookSearch] query='{query}', trying {len(all_urls)} URLs")
     html_text = ""
@@ -159,7 +149,7 @@ async def book_search(
     for url in all_urls:
         try:
             async with _httpx.AsyncClient(
-                timeout=15, follow_redirects=True, verify=False
+                timeout=30, follow_redirects=True, verify=False
             ) as client:
                 resp = await client.get(
                     url,
@@ -210,6 +200,23 @@ async def book_import(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="该书已在书架中")
 
+    def _parse_file_size(v) -> int:
+        if isinstance(v, int):
+            return v
+        if not isinstance(v, str):
+            return 0
+        v = v.strip().upper()
+        import re as _re
+        m = _re.match(r'([\d.]+)\s*(KB|MB|GB|TB|B)?', v)
+        if not m:
+            return 0
+        num = float(m.group(1))
+        unit = m.group(2) or 'B'
+        multipliers = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+        return int(num * multipliers.get(unit, 1))
+
+    file_size_int = _parse_file_size(req.file_size)
+
     can_auto_download = bool(req.md5 and len(req.md5) == 32)
     has_direct_url = bool(req.download_url and req.download_url.startswith("http"))
 
@@ -224,7 +231,7 @@ async def book_import(
         title=req.title,
         filename=f"{req.title}.pdf",
         file_path="",
-        file_size=req.file_size,
+        file_size=file_size_int,
         file_type="pdf",
         source_type=req.source or "book_search",
         source_url=source_url,
@@ -254,159 +261,198 @@ async def book_import(
         title=req.title,
         author=req.author,
         download_url=download_url,
-        file_size=req.file_size,
+        file_size=file_size_int,
         status="pending",
     )
     db.add(task)
     await db.commit()
 
-    async def _download_and_process(task_id: int, doc_id: int, md5: str | None):
-        from app.core.database import async_session_factory
-        import httpx as _httpx
-        import re as _re
-
-        async with async_session_factory() as s:
-            try:
-                t = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one()
-                d = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one()
-                t.status = "downloading"
-                t.progress = 10
-                await s.commit()
-
-                stored_name = f"{uuid.uuid4().hex}.pdf"
-                file_path = settings.UPLOAD_DIR / stored_name
-                content = None
-                _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-
-                if md5:
-                    from urllib.parse import quote as _quote
-
-                    _log.info(f"[BookImport] 从 Libgen 下载 md5={md5}")
-                    ads_html = ""
-                    libgen_ads_url = f"https://libgen.li/ads.php?md5={md5}"
-                    ads_urls = [
-                        f"https://api.codetabs.com/v1/proxy/?quest={_quote(libgen_ads_url, safe='')}",
-                        libgen_ads_url,
-                        f"https://api.allorigins.win/raw?url={_quote(libgen_ads_url, safe='')}",
-                    ]
-                    for ads_url in ads_urls:
-                        try:
-                            async with _httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as client:
-                                ads_resp = await client.get(ads_url, headers={"User-Agent": _ua})
-                                if ads_resp.status_code == 200 and 'get.php' in ads_resp.text:
-                                    ads_html = ads_resp.text
-                                    _log.info(f"[BookImport] Libgen 页面获取成功 via {ads_url[:60]}")
-                                    break
-                        except Exception as ex:
-                            _log.debug(f"[BookImport] ads.php 失败 {ads_url[:50]}: {ex}")
-                            continue
-
-                    if not ads_html:
-                        raise ValueError(f"无法访问 Libgen（md5={md5}）")
-
-                    get_m = _re.search(
-                        r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)',
-                        ads_html,
-                    )
-                    if not get_m:
-                        raise ValueError("无法从 Libgen 页面解析下载链接")
-
-                    get_path = get_m.group(1)
-                    t.progress = 30
-                    await s.commit()
-
-                    libgen_get_url = f"https://libgen.li/{get_path}"
-
-                    cdn_url = None
-                    try:
-                        async with _httpx.AsyncClient(timeout=15, follow_redirects=False, verify=False) as client:
-                            redir_resp = await client.get(libgen_get_url, headers={"User-Agent": _ua})
-                            if redir_resp.status_code in (301, 302, 307, 308):
-                                cdn_url = redir_resp.headers.get("location")
-                                _log.info(f"[BookImport] CDN redirect: {cdn_url[:80] if cdn_url else 'None'}")
-                    except Exception:
-                        pass
-
-                    if not cdn_url:
-                        proxy_redir_url = f"https://api.codetabs.com/v1/proxy/?quest={libgen_get_url}"
-                        try:
-                            async with _httpx.AsyncClient(timeout=15, follow_redirects=False, verify=False) as client:
-                                pr = await client.get(proxy_redir_url, headers={"User-Agent": _ua})
-                                loc = pr.headers.get("location")
-                                if loc:
-                                    cdn_url = loc
-                        except Exception:
-                            pass
-
-                    download_urls = []
-                    if cdn_url:
-                        download_urls.append(f"https://api.codetabs.com/v1/proxy/?quest={_quote(cdn_url, safe='')}")
-                        download_urls.append(cdn_url)
-                    download_urls.append(f"https://api.codetabs.com/v1/proxy/?quest={_quote(libgen_get_url, safe='')}")
-                    download_urls.append(libgen_get_url)
-                    content = None
-                    for dl_url in download_urls:
-                        try:
-                            _log.info(f"[BookImport] 尝试下载: {dl_url[:80]}")
-                            async with _httpx.AsyncClient(timeout=300, follow_redirects=True, verify=False) as client:
-                                resp = await client.get(dl_url, headers={"User-Agent": _ua})
-                                resp.raise_for_status()
-                                if len(resp.content) > 1024 and resp.content[:5].startswith(b"%PDF"):
-                                    content = resp.content
-                                    _log.info(f"[BookImport] 下载成功 size={len(content)}")
-                                    break
-                                else:
-                                    _log.warning(f"[BookImport] 响应不是 PDF: size={len(resp.content)}, head={resp.content[:10]!r}")
-                        except Exception as ex:
-                            _log.warning(f"[BookImport] 下载失败 {dl_url[:60]}: {ex}")
-                            continue
-
-                    if not content:
-                        raise ValueError(f"所有下载路径均失败（md5={md5}）")
-                else:
-                    _log.info(f"[BookImport] 直接下载: url={t.download_url}")
-                    async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-                        resp = await client.get(t.download_url, headers={"User-Agent": _ua})
-                        resp.raise_for_status()
-                        content = resp.content
-
-                if not content[:5].startswith(b"%PDF"):
-                    raise ValueError(
-                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，size: {len(content)}）"
-                    )
-
-                with open(file_path, "wb") as f:
-                    f.write(content)
-
-                _log.info(f"[BookImport] 下载完成: task={task_id}, size={len(content)}, path={file_path}")
-                d.file_path = str(file_path)
-                d.file_size = len(content)
-                d.status = "pending"
-                t.status = "processing"
-                t.progress = 50
-                await s.commit()
-
-                await process_document(doc_id)
-                t.status = "done"
-                t.progress = 100
-                await s.commit()
-                _log.info(f"[BookImport] 处理完成: task={task_id}, doc={doc_id}")
-            except Exception as e:
-                _log.error(f"[BookImport] 失败: task={task_id}, doc={doc_id}, error={e}")
-                try:
-                    t2 = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one_or_none()
-                    d2 = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one_or_none()
-                    if t2:
-                        t2.status = "error"
-                        t2.error_message = str(e)[:500]
-                    if d2:
-                        d2.status = "pending_upload"
-                    await s.commit()
-                except Exception:
-                    pass
-
-    asyncio.create_task(_download_and_process(task.id, doc.id, req.md5))
+    asyncio.create_task(_download_and_process_pdf(task.id, doc.id, req.md5))
     return ApiResponse.ok(data={"task_id": task.id, "document_id": doc.id}, msg="导入任务已创建，正在自动下载 PDF")
+
+
+async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> bytes | None:
+    """尝试从多个镜像下载 PDF，返回 bytes 或 None"""
+
+    async def _fetch(url: str, timeout: int = 30, follow: bool = True) -> bytes | None:
+        try:
+            async with _httpx.AsyncClient(timeout=timeout, follow_redirects=follow, verify=False) as c:
+                r = await c.get(url, headers={"User-Agent": _ua})
+                return r.content if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    async def _fetch_pdf(url: str, timeout: int = 300) -> bytes | None:
+        try:
+            _log.info(f"[BookImport] 尝试下载: {url[:100]}")
+            async with _httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as c:
+                r = await c.get(url, headers={"User-Agent": _ua})
+                r.raise_for_status()
+                if len(r.content) > 1024 and r.content[:5].startswith(b"%PDF"):
+                    _log.info(f"[BookImport] 下载成功 size={len(r.content)}")
+                    return r.content
+                _log.warning(f"[BookImport] 非PDF: size={len(r.content)}, head={r.content[:10]!r}")
+        except Exception as ex:
+            _log.warning(f"[BookImport] 失败 {url[:80]}: {ex}")
+        return None
+
+    def _proxy(url: str) -> str:
+        return f"https://api.codetabs.com/v1/proxy/?quest={_quote(url, safe='')}"
+
+    def _allorigins(url: str) -> str:
+        return f"https://api.allorigins.win/raw?url={_quote(url, safe='')}"
+
+    # --- 策略 1: libgen.li ads.php -> get.php -> CDN ---
+    _log.info(f"[BookImport] 策略1: libgen.li/ads.php md5={md5}")
+    ads_url = f"https://libgen.li/ads.php?md5={md5}"
+    ads_html = None
+    libgen_db_error = False
+    for url in [_proxy(ads_url), _allorigins(ads_url), ads_url]:
+        raw = await _fetch(url)
+        if not raw:
+            continue
+        text = raw.decode("utf-8", errors="ignore")
+        if 'get.php' in text:
+            ads_html = text
+            break
+        if 'max_user_connections' in text or 'database' in text.lower():
+            _log.warning("[BookImport] Libgen 数据库暂时不可用（连接数已满），稍后重试")
+            libgen_db_error = True
+
+    if ads_html:
+        get_m = _re.search(r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', ads_html)
+        if get_m:
+            get_url = f"https://libgen.li/{get_m.group(1)}"
+            cdn_url = None
+            try:
+                async with _httpx.AsyncClient(timeout=15, follow_redirects=False, verify=False) as c:
+                    rr = await c.get(get_url, headers={"User-Agent": _ua})
+                    if rr.status_code in (301, 302, 307, 308):
+                        cdn_url = rr.headers.get("location")
+                        _log.info(f"[BookImport] CDN redirect: {cdn_url[:80] if cdn_url else 'N/A'}")
+            except Exception:
+                pass
+
+            for dl in ([_proxy(cdn_url), cdn_url] if cdn_url else []) + [_proxy(get_url), get_url]:
+                pdf = await _fetch_pdf(dl)
+                if pdf:
+                    return pdf
+
+    # --- 策略 2: library.lol ---
+    _log.info(f"[BookImport] 策略2: library.lol md5={md5}")
+    lol_url = f"https://library.lol/main/{md5}"
+    for url in [_proxy(lol_url), lol_url]:
+        raw = await _fetch(url)
+        if raw:
+            html_text = raw.decode("utf-8", errors="ignore")
+            dl_m = _re.search(r'href="(https?://[^"]+)"[^>]*>GET</a>', html_text)
+            if dl_m:
+                direct_url = dl_m.group(1)
+                for dl in [_proxy(direct_url), direct_url]:
+                    pdf = await _fetch_pdf(dl)
+                    if pdf:
+                        return pdf
+
+    # --- 策略 3: libgen.rs/libgen.is fiction ---
+    _log.info(f"[BookImport] 策略3: libgen.rs fiction md5={md5}")
+    fic_url = f"https://libgen.rs/fiction/{md5}"
+    for url in [_proxy(fic_url)]:
+        raw = await _fetch(url)
+        if raw:
+            html_text = raw.decode("utf-8", errors="ignore")
+            dl_m = _re.search(r'href="(https?://[^"]+)"[^>]*>GET</a>', html_text)
+            if dl_m:
+                pdf = await _fetch_pdf(dl_m.group(1))
+                if pdf:
+                    return pdf
+
+    _log.warning(f"[BookImport] 所有策略均失败 md5={md5}")
+    return None
+
+
+async def _download_and_process_pdf(task_id: int, doc_id: int, md5: str | None):
+    """从 Libgen 下载 PDF 并启动 AI 处理（模块级函数，供 import 和 retry 使用）"""
+    from app.core.database import async_session_factory
+    import httpx as _httpx
+    import re as _re
+    import uuid
+    import logging
+    from app.core.config import settings
+    from app.models.social import BookImportTask
+    from app.services.doc_processor import process_document
+
+    _log = logging.getLogger(__name__)
+
+    async with async_session_factory() as s:
+        try:
+            t = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one()
+            d = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one()
+            t.status = "downloading"
+            t.progress = 10
+            await s.commit()
+
+            stored_name = f"{uuid.uuid4().hex}.pdf"
+            file_path = settings.UPLOAD_DIR / stored_name
+            content = None
+            _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+            if md5:
+                from urllib.parse import quote as _quote
+
+                _log.info(f"[BookImport] 下载 md5={md5}")
+                content = await _try_download_pdf(md5, _ua, _log, _httpx, _re, _quote)
+
+                if content:
+                    t.progress = 80
+                    await s.commit()
+                else:
+                    raise ValueError(
+                        f"该书籍暂不支持自动下载（md5={md5}），请手动上传 PDF"
+                    )
+            else:
+                _log.info(f"[BookImport] 直接下载: url={t.download_url}")
+                async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+                    resp = await client.get(t.download_url, headers={"User-Agent": _ua})
+                    resp.raise_for_status()
+                    content = resp.content
+
+            if not content[:5].startswith(b"%PDF"):
+                raise ValueError(
+                    f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，size: {len(content)}）"
+                )
+
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+            _log.info(f"[BookImport] 下载完成: task={task_id}, size={len(content)}, path={file_path}")
+            d.file_path = str(file_path)
+            d.file_size = len(content)
+            d.status = "pending"
+            t.status = "processing"
+            t.progress = 50
+            await s.commit()
+
+            await process_document(doc_id)
+            t.status = "done"
+            t.progress = 100
+            await s.commit()
+            _log.info(f"[BookImport] 处理完成: task={task_id}, doc={doc_id}")
+        except Exception as e:
+            _log.error(f"[BookImport] 失败: task={task_id}, doc={doc_id}, error={e}")
+            try:
+                t2 = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one_or_none()
+                d2 = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one_or_none()
+                if t2:
+                    t2.status = "error"
+                    t2.error_message = str(e)[:500]
+                if d2:
+                    d2.status = "pending_upload"
+                await s.commit()
+            except Exception:
+                pass
+
+
+_retry_download_task = _download_and_process_pdf
 
 
 @router.get("/book-import/{task_id}/status", response_model=ApiResponse)
@@ -449,7 +495,72 @@ async def retry_book_import(
     task.status = "pending"
     task.progress = 0
     task.error_message = None
+    await db.commit()
     return ApiResponse.ok(msg="重试已启动")
+
+
+@router.post("/{doc_id}/retry-download", response_model=ApiResponse)
+async def retry_download(
+    doc_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """对 pending_upload 状态的文档重新尝试自动下载 PDF"""
+    import asyncio
+    import re as _re
+    from app.models.social import BookImportTask
+
+    doc = (await db.execute(
+        select(Document).where(Document.id == doc_id, Document.user_id == user.id)
+    )).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    if doc.status not in ("pending_upload", "error"):
+        raise HTTPException(status_code=400, detail="当前状态不支持重新下载")
+
+    md5 = ""
+    if doc.source_url:
+        m = _re.search(r'/md5/([a-f0-9]{32})', doc.source_url)
+        if m:
+            md5 = m.group(1)
+
+    if not md5:
+        raise HTTPException(status_code=400, detail="该文档无法自动下载，请手动上传 PDF")
+
+    doc.status = "importing"
+    task_result = await db.execute(
+        select(BookImportTask).where(
+            BookImportTask.document_id == doc_id
+        ).order_by(BookImportTask.id.desc())
+    )
+    existing_task = task_result.scalar_one_or_none()
+
+    if existing_task:
+        existing_task.status = "pending"
+        existing_task.progress = 0
+        existing_task.error_message = None
+        await db.commit()
+        task_id = existing_task.id
+    else:
+        task = BookImportTask(
+            user_id=user.id,
+            document_id=doc.id,
+            isbn=doc.isbn,
+            title=doc.title,
+            author=doc.author,
+            download_url=doc.source_url or "",
+            file_size=doc.file_size,
+            status="pending",
+        )
+        db.add(task)
+        await db.commit()
+        task_id = task.id
+
+    asyncio.create_task(_retry_download_task(task_id, doc_id, md5))
+    return ApiResponse.ok(
+        data={"task_id": task_id, "document_id": doc_id},
+        msg="正在重新下载 PDF，请稍候..."
+    )
 
 
 @router.get("/check-isbn/{isbn}", response_model=ApiResponse)
