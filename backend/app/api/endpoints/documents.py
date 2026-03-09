@@ -37,8 +37,11 @@ def _allowed_ext(filename: str) -> bool:
 # ---- 固定路径路由必须在 /{doc_id} 之前，否则会被路径参数拦截 ----
 
 
-def _parse_annas_archive_html(html_text: str) -> list[dict]:
-    """解析 Anna's Archive 搜索结果 HTML，提取书籍信息"""
+def _parse_annas_archive_html(html_text: str, libgen_source: bool = False) -> list[dict]:
+    """解析 Anna's Archive 搜索结果 HTML，提取书籍信息。
+
+    libgen_source=True 时表示该 HTML 来自 lgrsnf/lgli 过滤搜索，书籍来自 Libgen 可直接下载。
+    """
     import re
     from html import unescape
 
@@ -101,6 +104,9 @@ def _parse_annas_archive_html(html_text: str) -> list[dict]:
         if isbn_m:
             isbn = isbn_m.group(1)
 
+        # 判断是否可自动下载：libgen 来源的书（lgrsnf/lgli）可通过 ads.php 下载
+        can_auto_download = libgen_source and file_type == "pdf"
+
         results.append({
             "md5": md5,
             "title": title,
@@ -115,6 +121,7 @@ def _parse_annas_archive_html(html_text: str) -> list[dict]:
             "link": f"https://annas-archive.gl/md5/{md5}",
             "source": "annas_archive",
             "download_available": file_type == "pdf",
+            "can_auto_download": can_auto_download,
         })
     return results
 
@@ -127,57 +134,80 @@ async def book_search(
     page: int = Query(1, ge=1),
     user: User = Depends(get_current_user),
 ):
-    """通过 Anna's Archive 搜索书籍（多路径尝试）"""
+    """通过 Anna's Archive 搜索书籍（双轨策略：优先 Libgen 可下载书籍）"""
     import httpx as _httpx
     import logging
     from urllib.parse import quote
 
     _log = logging.getLogger(__name__)
     encoded_query = quote(query)
+    UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
-    base_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf"
+    def make_proxy_urls(target_url: str) -> list[str]:
+        return [
+            f"https://api.codetabs.com/v1/proxy/?quest={quote(target_url, safe='')}",
+            f"https://api.allorigins.win/raw?url={quote(target_url, safe='')}",
+            target_url,
+        ]
 
-    all_urls = [
-        f"https://api.codetabs.com/v1/proxy/?quest={quote(base_url, safe='')}",
-        f"https://api.allorigins.win/raw?url={quote(base_url, safe='')}",
-        base_url,
-    ]
+    async def fetch_html(target_url: str, label: str = "") -> str:
+        for url in make_proxy_urls(target_url):
+            try:
+                async with _httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as c:
+                    resp = await c.get(url, headers={"User-Agent": UA})
+                    if resp.status_code == 200 and '/md5/' in resp.text:
+                        _log.info(f"[BookSearch] {label} Success via {url[:60]}...")
+                        return resp.text
+            except Exception as e:
+                _log.debug(f"[BookSearch] {label} Failed {url[:50]}: {e}")
+        return ""
 
-    _log.info(f"[BookSearch] query='{query}', trying {len(all_urls)} URLs")
-    html_text = ""
+    _log.info(f"[BookSearch] query='{query}'")
 
-    for url in all_urls:
-        try:
-            async with _httpx.AsyncClient(
-                timeout=30, follow_redirects=True, verify=False
-            ) as client:
-                resp = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                            "AppleWebKit/537.36"
-                        ),
-                    },
-                )
-                if resp.status_code == 200 and '/md5/' in resp.text:
-                    html_text = resp.text
-                    _log.info(f"[BookSearch] Success via {url[:60]}...")
-                    break
-        except Exception as e:
-            _log.debug(f"[BookSearch] Failed {url[:50]}: {e}")
+    # 并行搜索：lgrsnf（非小说）、lgli（小说）、通用搜索
+    libgen_nf_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgrsnf"
+    libgen_fi_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgli"
+    general_url   = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf"
+
+    libgen_nf_task = asyncio.create_task(fetch_html(libgen_nf_url, "lgrsnf"))
+    libgen_fi_task = asyncio.create_task(fetch_html(libgen_fi_url, "lgli"))
+    general_task   = asyncio.create_task(fetch_html(general_url,   "general"))
+
+    libgen_nf_html, libgen_fi_html, general_html = await asyncio.gather(
+        libgen_nf_task, libgen_fi_task, general_task
+    )
+
+    # 解析 Libgen 来源（can_auto_download=True）
+    seen_md5: set[str] = set()
+    results: list[dict] = []
+
+    for html, is_libgen in [
+        (libgen_nf_html, True),
+        (libgen_fi_html, True),
+        (general_html,   False),
+    ]:
+        if not html:
             continue
+        for item in _parse_annas_archive_html(html, libgen_source=is_libgen):
+            if item["md5"] not in seen_md5:
+                seen_md5.add(item["md5"])
+                results.append(item)
 
-    if not html_text:
-        _log.warning("[BookSearch] All sources failed, returning empty")
+    # 可自动下载的排前面
+    results.sort(key=lambda x: (0 if x.get("can_auto_download") else 1))
+
+    _log.info(
+        f"[BookSearch] Found {len(results)} results for '{query}' "
+        f"(auto_downloadable={sum(1 for r in results if r.get('can_auto_download'))})"
+    )
+
+    if not results:
         return ApiResponse.ok(
             data={"results": [], "total": 0, "page": page,
-                  "search_url": f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf",
+                  "search_url": general_url,
                   "error": "搜索服务暂时不可用，请在浏览器中打开链接手动搜索"}
         )
 
-    results = _parse_annas_archive_html(html_text)
-    _log.info(f"[BookSearch] Found {len(results)} results for '{query}'")
     return ApiResponse.ok(
         data={"results": results, "total": len(results), "page": page}
     )
@@ -273,10 +303,11 @@ async def book_import(
 
 async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> bytes | None:
     """
-    尝试从 Libgen 下载 PDF，返回 bytes 或 None。
-    经过实测验证的可靠流程：
-      codetabs 代理 → libgen.li/ads.php → 解析 get.php 链接 → codetabs 代理下载 PDF
-    整个过程通过 CORS 代理中转，规避中国大陆直连 libgen 超时问题。
+    多策略下载 PDF，返回 bytes 或 None。
+
+    策略顺序（经服务器实测）：
+      1. libgen.li/ads.php → get.php（via codetabs/allorigins 代理）
+      2. Anna's Archive md5 页面 → 提取 libgen.li/file.php?id= → ads.php → get.php
     """
     import asyncio as _asyncio
 
@@ -289,104 +320,111 @@ async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> by
         async with _httpx.AsyncClient(timeout=timeout, follow_redirects=follow, verify=False) as c:
             return await c.get(url, headers={"User-Agent": _ua})
 
-    # ── 第一步：获取 libgen.li/ads.php 页面，提取 get.php 下载链接 ──
-    ads_url = f"https://libgen.li/ads.php?md5={md5}"
-    get_path = None
-    libgen_db_error = False
-    libgen_no_entry = False
-
-    MAX_RETRIES = 2
-    for attempt in range(MAX_RETRIES):
-        if attempt > 0:
-            wait = 10 * attempt
-            _log.info(f"[BookImport] 第 {attempt+1} 次重试，等待 {wait}s...")
-            await _asyncio.sleep(wait)
-
+    async def _download_via_get_path(get_path: str) -> bytes | None:
+        """拿到 get.php 路径后执行实际下载"""
+        get_url = f"https://libgen.li/{get_path}"
+        _log.info(f"[BookImport] 开始下载 PDF: {get_url[:80]}")
         for make_proxy in PROXIES:
-            proxy_url = make_proxy(ads_url)
+            proxy_dl_url = make_proxy(get_url)
             try:
-                resp = await _get(proxy_url, timeout=30)
-                if resp.status_code != 200:
-                    continue
-                text = resp.text
-                if "get.php" in text:
-                    m = _re.search(
-                        r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', text
-                    )
-                    if m:
-                        get_path = m.group(1)
-                        _log.info(f"[BookImport] 解析到下载链接: {get_path}")
-                        break
-                elif "max_user_connections" in text or "database" in text.lower():
-                    libgen_db_error = True
-                    _log.warning("[BookImport] Libgen 数据库暂时过载，将重试")
-                elif len(resp.content) > 500 and "get.php" not in text:
-                    libgen_no_entry = True
-                    _log.info(f"[BookImport] 该 md5 在 Libgen 中无下载入口")
+                _log.info(f"[BookImport] 通过代理下载: {proxy_dl_url[:100]}")
+                resp = await _get(proxy_dl_url, timeout=180, follow=True)
+                if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
+                    _log.info(f"[BookImport] PDF 下载成功! size={len(resp.content)}")
+                    return resp.content
+                _log.warning(
+                    f"[BookImport] 代理返回非 PDF: status={resp.status_code} "
+                    f"size={len(resp.content)} head={resp.content[:10]!r}"
+                )
             except Exception as ex:
-                _log.debug(f"[BookImport] ads.php 代理失败: {ex}")
-                continue
-
-        if get_path or libgen_no_entry:
-            break
-
-    if not get_path:
-        if libgen_db_error:
-            _log.warning(f"[BookImport] Libgen 数据库持续不可用 md5={md5}")
-        elif libgen_no_entry:
-            _log.info(f"[BookImport] 该书不在 Libgen 数据库中 md5={md5}")
-        else:
-            _log.warning(f"[BookImport] 无法访问 Libgen md5={md5}")
+                _log.warning(f"[BookImport] 代理下载失败: {ex}")
         return None
 
-    # ── 第二步：通过代理下载 PDF（经实测最可靠的路径） ──
-    get_url = f"https://libgen.li/{get_path}"
-    _log.info(f"[BookImport] 开始下载 PDF: {get_url[:80]}")
+    async def _get_get_path_via_ads(target_md5: str) -> str | None:
+        """通过 libgen.li/ads.php 获取 get.php 下载路径"""
+        ads_url = f"https://libgen.li/ads.php?md5={target_md5}"
+        for attempt in range(2):
+            if attempt > 0:
+                await _asyncio.sleep(10)
+                _log.info(f"[BookImport] ads.php 重试 attempt={attempt+1}")
+            for make_proxy in PROXIES:
+                try:
+                    resp = await _get(make_proxy(ads_url), timeout=30)
+                    if resp.status_code != 200:
+                        continue
+                    text = resp.text
+                    if "get.php" in text:
+                        m = _re.search(r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', text)
+                        if m:
+                            _log.info(f"[BookImport] ads.php 解析到: {m.group(1)}")
+                            return m.group(1)
+                    elif "max_user_connections" in text:
+                        _log.warning("[BookImport] Libgen DB 过载，将重试")
+                        break  # 跳出代理循环，等待后重试
+                    elif b"File not found" in resp.content or (len(resp.content) < 10000 and "get.php" not in text):
+                        _log.info(f"[BookImport] md5={target_md5[:8]} 不在 Libgen 数据库中")
+                        return None  # 直接返回，无需重试
+                except Exception as ex:
+                    _log.debug(f"[BookImport] ads.php 代理失败: {ex}")
+        return None
 
+    # ── 策略 1：直接用 md5 查 libgen.li/ads.php ──
+    _log.info(f"[BookImport] 策略1: libgen ads.php md5={md5}")
+    get_path = await _get_get_path_via_ads(md5)
+    if get_path:
+        result = await _download_via_get_path(get_path)
+        if result:
+            return result
+
+    # ── 策略 2：通过 Anna's Archive md5 页面获取 libgen 内部 file ID，再走 ads.php ──
+    _log.info(f"[BookImport] 策略2: Anna's Archive md5 页面查找下载链接 md5={md5}")
+    anna_url = f"https://annas-archive.gl/md5/{md5}"
     for make_proxy in PROXIES:
-        proxy_dl_url = make_proxy(get_url)
         try:
-            _log.info(f"[BookImport] 通过代理下载: {proxy_dl_url[:100]}")
-            resp = await _get(proxy_dl_url, timeout=180, follow=True)
-            if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
-                _log.info(f"[BookImport] PDF 下载成功! size={len(resp.content)}")
-                return resp.content
-            _log.warning(
-                f"[BookImport] 代理返回非 PDF: status={resp.status_code} "
-                f"size={len(resp.content)} head={resp.content[:10]!r}"
-            )
-        except Exception as ex:
-            _log.warning(f"[BookImport] 代理下载失败: {ex}")
-
-    # ── 第三步：备用 - 解析 CDN 重定向后直连 ──
-    _log.info("[BookImport] 尝试解析 CDN 重定向...")
-    cdn_url = None
-    try:
-        resp = await _get(get_url, timeout=15, follow=False)
-        if resp.status_code in (301, 302, 307, 308):
-            cdn_url = resp.headers.get("location")
-            _log.info(f"[BookImport] CDN: {cdn_url[:80] if cdn_url else 'N/A'}")
-    except Exception:
-        pass
-
-    if cdn_url:
-        for make_proxy in PROXIES:
-            try:
-                resp = await _get(make_proxy(cdn_url), timeout=180, follow=True)
-                if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
-                    _log.info(f"[BookImport] CDN 代理下载成功! size={len(resp.content)}")
-                    return resp.content
-            except Exception:
+            resp = await _get(make_proxy(anna_url), timeout=30)
+            if resp.status_code != 200 or len(resp.content) < 5000:
                 continue
-        try:
-            resp = await _get(cdn_url, timeout=180, follow=True)
-            if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
-                _log.info(f"[BookImport] CDN 直连下载成功! size={len(resp.content)}")
-                return resp.content
-        except Exception:
-            pass
+            text = resp.text
 
-    _log.warning(f"[BookImport] 所有下载路径均失败 md5={md5}")
+            # 查找 libgen ads.php 链接（页面上有时会有不同 md5 的 ads.php 链接）
+            ads_matches = _re.findall(r'libgen\.li/ads\.php\?md5=([a-f0-9]{32})', text)
+            for alt_md5 in ads_matches:
+                if alt_md5 == md5:
+                    continue
+                _log.info(f"[BookImport] 策略2: 找到备用 md5={alt_md5[:8]}")
+                get_path = await _get_get_path_via_ads(alt_md5)
+                if get_path:
+                    result = await _download_via_get_path(get_path)
+                    if result:
+                        return result
+
+            # 查找 libgen.li/file.php?id= 链接（文件直接 ID）
+            file_id_m = _re.search(r'libgen\.li/file\.php\?id=(\d+)', text)
+            if file_id_m:
+                file_id = file_id_m.group(1)
+                _log.info(f"[BookImport] 策略2: 找到 file.php id={file_id}")
+                # file.php 页面有 ads.php 链接，提取其中的 md5
+                file_url = f"https://libgen.li/file.php?id={file_id}"
+                for mp in PROXIES:
+                    try:
+                        r2 = await _get(mp(file_url), timeout=20)
+                        alt_md5_m = _re.search(r'/ads\.php\?md5=([a-f0-9]{32})', r2.text)
+                        if alt_md5_m:
+                            alt_md5 = alt_md5_m.group(1)
+                            _log.info(f"[BookImport] 策略2 file.php: 提取到 md5={alt_md5[:8]}")
+                            get_path = await _get_get_path_via_ads(alt_md5)
+                            if get_path:
+                                result = await _download_via_get_path(get_path)
+                                if result:
+                                    return result
+                        break
+                    except Exception:
+                        continue
+            break  # 拿到 Anna's Archive 页面就退出，无论是否找到链接
+        except Exception as ex:
+            _log.debug(f"[BookImport] Anna Archive 代理失败: {ex}")
+
+    _log.warning(f"[BookImport] 所有下载策略均失败 md5={md5}")
     return None
 
 

@@ -573,8 +573,10 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         cover_url: book.cover_url || null,
         source: book.source || 'annas_archive',
       });
-      if (book.md5 && book.download_available !== false) {
-        message.success(`《${book.title}》正在自动下载并导入...`);
+      if (book.can_auto_download) {
+        message.success(`《${book.title}》正在自动下载并导入，请稍候...`);
+      } else if (book.md5) {
+        message.info(`《${book.title}》已添加到书架，请在书架中手动上传 PDF 文件`);
       } else {
         message.success(`《${book.title}》已添加到书架`);
       }
@@ -823,11 +825,23 @@ function AddDocModal({ open, onClose, onUploadDone }) {
             {bookResults.map((book, idx) => {
               const bookKey = book.md5 || book.isbn || idx;
               const isPdf = book.file_type === 'pdf';
+              const canAutoDownload = book.can_auto_download === true;
+              const borderColor = canAutoDownload ? '#52c41a' : (isPdf ? '#d9d9d9' : undefined);
+              const importTip = canAutoDownload
+                ? '✅ Libgen 来源，支持自动下载 PDF'
+                : isPdf
+                  ? '⚠️ 非 Libgen 来源，导入后需手动上传 PDF'
+                  : `格式为 ${book.file_type || '未知'}，仅支持 PDF`;
               return (
                 <Card
                   key={bookKey}
                   size="small"
-                  style={{ marginBottom: 8, borderRadius: 8, border: isPdf ? '1px solid #b7eb8f' : undefined }}
+                  style={{
+                    marginBottom: 8,
+                    borderRadius: 8,
+                    border: `1px solid ${borderColor || '#f0f0f0'}`,
+                    opacity: isPdf ? 1 : 0.6,
+                  }}
                   styles={{ body: { padding: 12 } }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -841,7 +855,9 @@ function AddDocModal({ open, onClose, onUploadDone }) {
                     ) : (
                       <div style={{
                         width: 40, height: 56, borderRadius: 4, flexShrink: 0,
-                        background: 'linear-gradient(135deg, #667eea, #764ba2)',
+                        background: canAutoDownload
+                          ? 'linear-gradient(135deg, #52c41a, #237804)'
+                          : 'linear-gradient(135deg, #667eea, #764ba2)',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                       }}>
                         <BookOutlined style={{ color: '#fff', fontSize: 18 }} />
@@ -855,6 +871,12 @@ function AddDocModal({ open, onClose, onUploadDone }) {
                         </Text>
                       )}
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {canAutoDownload && (
+                          <Tag color="success" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>自动下载</Tag>
+                        )}
+                        {isPdf && !canAutoDownload && (
+                          <Tag color="warning" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>需手动上传</Tag>
+                        )}
                         <Tag color={isPdf ? 'green' : 'default'} style={{ fontSize: 10, margin: 0, padding: '0 4px', textTransform: 'uppercase' }}>
                           {book.file_type || 'pdf'}
                         </Tag>
@@ -864,16 +886,16 @@ function AddDocModal({ open, onClose, onUploadDone }) {
                         {book.publisher && <Tag style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>{book.publisher.length > 20 ? book.publisher.slice(0,20) + '…' : book.publisher}</Tag>}
                       </div>
                     </div>
-                    <Tooltip title={isPdf ? '导入并自动下载 PDF' : `格式为 ${book.file_type || '未知'}，仅支持 PDF 自动导入`}>
+                    <Tooltip title={importTip}>
                       <Button
-                        type="primary"
+                        type={canAutoDownload ? 'primary' : 'default'}
                         size="small"
                         icon={<ImportOutlined />}
                         loading={importingBooks.has(bookKey)}
                         disabled={!isPdf}
                         onClick={() => handleBookImport(book)}
                       >
-                        {isPdf ? '导入' : book.file_type?.toUpperCase()}
+                        {canAutoDownload ? '导入' : isPdf ? '添加' : book.file_type?.toUpperCase()}
                       </Button>
                     </Tooltip>
                   </div>
