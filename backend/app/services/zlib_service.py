@@ -107,6 +107,8 @@ _ZLIB_DOMAINS = [
     "z-lib.gd",
     "1lib.sk",
     "z-lib.id",
+    "z-lib.se",
+    "z-library.se",
 ]
 
 
@@ -127,7 +129,7 @@ async def _do_login() -> bool:
             login_url = f"https://{domain}/eapi/user/login"
             try:
                 async with httpx.AsyncClient(
-                    timeout=20, follow_redirects=True, verify=False
+                    timeout=20, follow_redirects=False, verify=False
                 ) as c:
                     resp = await c.post(
                         login_url,
@@ -135,18 +137,33 @@ async def _do_login() -> bool:
                         headers={
                             "User-Agent": _UA,
                             "Content-Type": "application/json",
+                            "Accept": "application/json, */*",
                             "Origin": f"https://{domain}",
                             "Referer": f"https://{domain}/login",
+                            "sec-fetch-site": "same-origin",
+                            "sec-fetch-mode": "cors",
                         },
                     )
-                    if resp.status_code in (200, 201):
-                        data = resp.json()
-                        if data.get("success") == 1 or data.get("user"):
-                            _cred_store.set_cookies(dict(resp.cookies))
-                            logger.info(f"[ZLib] Login OK via {domain}")
-                            return True
-                        else:
-                            logger.warning(f"[ZLib] Login failed on {domain}: {data.get('error', '')}")
+                    # 301/302 = domain redirected (browser challenge), skip
+                    if resp.status_code in (301, 302, 307, 308):
+                        logger.debug(f"[ZLib] {domain} redirected (bot protection), skipping")
+                        continue
+                    if resp.status_code in (200, 201, 400):
+                        try:
+                            data = resp.json()
+                            if data.get("success") == 1 or data.get("user"):
+                                _cred_store.set_cookies(dict(resp.cookies))
+                                logger.info(f"[ZLib] Login OK via {domain}")
+                                return True
+                            else:
+                                err = data.get("error", "unknown")
+                                logger.warning(f"[ZLib] Login failed on {domain}: {err}")
+                                # Wrong credentials — no point trying other domains
+                                if "password" in err.lower() or "email" in err.lower():
+                                    logger.warning("[ZLib] Credential error — stopping login attempts")
+                                    return False
+                        except Exception:
+                            logger.debug(f"[ZLib] Non-JSON response from {domain}")
             except Exception as e:
                 logger.debug(f"[ZLib] Login error on {domain}: {e}")
 
