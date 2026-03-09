@@ -83,6 +83,14 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.error(f"音频清理异常: {e}")
 
+    # 初始化 Z-Library 凭据（加密存储于内存）
+    from app.services.zlib_service import init_zlib_credentials
+    init_zlib_credentials(
+        email=settings.ZLIB_EMAIL,
+        password=settings.ZLIB_PASSWORD,
+        secret_key=settings.SECRET_KEY,
+    )
+
     _cleanup_task = asyncio.create_task(_audio_cleanup_loop())
     yield
     _cleanup_task.cancel()

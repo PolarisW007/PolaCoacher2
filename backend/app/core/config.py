@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     ROOT_PATH: str = ""
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://42.121.164.11"]
 
+    # Z-Library credentials (stored encrypted at runtime, never logged)
+    ZLIB_EMAIL: str = ""
+    ZLIB_PASSWORD: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def ensure_dirs(self) -> None:

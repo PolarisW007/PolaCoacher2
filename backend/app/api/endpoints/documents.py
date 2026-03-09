@@ -164,47 +164,69 @@ async def book_search(
 
     _log.info(f"[BookSearch] query='{query}'")
 
-    # 并行搜索：lgrsnf（非小说）、lgli（小说）、通用搜索
-    libgen_nf_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgrsnf"
-    libgen_fi_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgli"
-    general_url   = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf"
+    # 检查是否有 Z-Library 凭据
+    from app.services.zlib_service import _cred_store as _zlib_creds
+    has_zlib = _zlib_creds.has_credentials
 
-    libgen_nf_task = asyncio.create_task(fetch_html(libgen_nf_url, "lgrsnf"))
-    libgen_fi_task = asyncio.create_task(fetch_html(libgen_fi_url, "lgli"))
-    general_task   = asyncio.create_task(fetch_html(general_url,   "general"))
+    # 并行搜索可下载来源：
+    #   lgrsnf = Libgen 非小说（自动下载）
+    #   lgli   = Libgen 小说（自动下载）
+    #   lgrs   = Libgen RS（自动下载）
+    #   zlib   = Z-Library（有账号时可下载）
+    # 不再搜索通用（含 duxiu 读秀、upload 社区上传等无法下载来源）
+    search_tasks = [
+        ("lgrsnf", True,  asyncio.create_task(fetch_html(
+            f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgrsnf", "lgrsnf"
+        ))),
+        ("lgli",   True,  asyncio.create_task(fetch_html(
+            f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgli", "lgli"
+        ))),
+        ("lgrs",   True,  asyncio.create_task(fetch_html(
+            f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=lgrs", "lgrs"
+        ))),
+    ]
+    if has_zlib:
+        search_tasks.append((
+            "zlib", False, asyncio.create_task(fetch_html(
+                f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf&src=zlib", "zlib"
+            ))
+        ))
 
-    libgen_nf_html, libgen_fi_html, general_html = await asyncio.gather(
-        libgen_nf_task, libgen_fi_task, general_task
-    )
+    htmls = await asyncio.gather(*[t for _, _, t in search_tasks])
 
-    # 解析 Libgen 来源（can_auto_download=True）
     seen_md5: set[str] = set()
     results: list[dict] = []
 
-    for html, is_libgen in [
-        (libgen_nf_html, True),
-        (libgen_fi_html, True),
-        (general_html,   False),
-    ]:
+    for (src_name, is_libgen, _), html in zip(search_tasks, htmls):
         if not html:
             continue
         for item in _parse_annas_archive_html(html, libgen_source=is_libgen):
             if item["md5"] not in seen_md5:
                 seen_md5.add(item["md5"])
+                item["book_source"] = src_name  # lgrsnf / lgli / lgrs / zlib
                 results.append(item)
 
-    # 可自动下载的排前面
-    results.sort(key=lambda x: (0 if x.get("can_auto_download") else 1))
+    # 可自动下载（Libgen）排前面，zlib 次之
+    def _sort_key(r):
+        if r.get("can_auto_download"):
+            return 0
+        if r.get("book_source") == "zlib":
+            return 1
+        return 2
+
+    results.sort(key=_sort_key)
 
     _log.info(
         f"[BookSearch] Found {len(results)} results for '{query}' "
-        f"(auto_downloadable={sum(1 for r in results if r.get('can_auto_download'))})"
+        f"(libgen={sum(1 for r in results if r.get('can_auto_download'))}, "
+        f"zlib={sum(1 for r in results if r.get('book_source') == 'zlib')})"
     )
 
     if not results:
+        fallback_url = f"https://annas-archive.gl/search?q={encoded_query}&ext=pdf"
         return ApiResponse.ok(
             data={"results": [], "total": 0, "page": page,
-                  "search_url": general_url,
+                  "search_url": fallback_url,
                   "error": "搜索服务暂时不可用，请在浏览器中打开链接手动搜索"}
         )
 
@@ -423,6 +445,17 @@ async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> by
             break  # 拿到 Anna's Archive 页面就退出，无论是否找到链接
         except Exception as ex:
             _log.debug(f"[BookImport] Anna Archive 代理失败: {ex}")
+
+    # ── 策略 3：Z-Library 下载（需要账号，用于 zlib 来源书籍） ──
+    _log.info(f"[BookImport] 策略3: Z-Library 下载 md5={md5}")
+    try:
+        from app.services.zlib_service import download_zlib_book
+        zlib_content = await download_zlib_book(md5)
+        if zlib_content:
+            _log.info(f"[BookImport] Z-Library 下载成功 size={len(zlib_content)}")
+            return zlib_content
+    except Exception as ex:
+        _log.debug(f"[BookImport] Z-Library 下载异常: {ex}")
 
     _log.warning(f"[BookImport] 所有下载策略均失败 md5={md5}")
     return None
