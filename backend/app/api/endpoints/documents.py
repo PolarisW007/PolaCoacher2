@@ -272,101 +272,121 @@ async def book_import(
 
 
 async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> bytes | None:
-    """尝试从多个镜像下载 PDF，返回 bytes 或 None"""
+    """
+    尝试从 Libgen 下载 PDF，返回 bytes 或 None。
+    经过实测验证的可靠流程：
+      codetabs 代理 → libgen.li/ads.php → 解析 get.php 链接 → codetabs 代理下载 PDF
+    整个过程通过 CORS 代理中转，规避中国大陆直连 libgen 超时问题。
+    """
+    import asyncio as _asyncio
 
-    async def _fetch(url: str, timeout: int = 30, follow: bool = True) -> bytes | None:
-        try:
-            async with _httpx.AsyncClient(timeout=timeout, follow_redirects=follow, verify=False) as c:
-                r = await c.get(url, headers={"User-Agent": _ua})
-                return r.content if r.status_code == 200 else None
-        except Exception:
-            return None
+    PROXIES = [
+        lambda u: f"https://api.codetabs.com/v1/proxy/?quest={_quote(u, safe='')}",
+        lambda u: f"https://api.allorigins.win/raw?url={_quote(u, safe='')}",
+    ]
 
-    async def _fetch_pdf(url: str, timeout: int = 300) -> bytes | None:
-        try:
-            _log.info(f"[BookImport] 尝试下载: {url[:100]}")
-            async with _httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as c:
-                r = await c.get(url, headers={"User-Agent": _ua})
-                r.raise_for_status()
-                if len(r.content) > 1024 and r.content[:5].startswith(b"%PDF"):
-                    _log.info(f"[BookImport] 下载成功 size={len(r.content)}")
-                    return r.content
-                _log.warning(f"[BookImport] 非PDF: size={len(r.content)}, head={r.content[:10]!r}")
-        except Exception as ex:
-            _log.warning(f"[BookImport] 失败 {url[:80]}: {ex}")
+    async def _get(url: str, timeout: int = 30, follow: bool = True):
+        async with _httpx.AsyncClient(timeout=timeout, follow_redirects=follow, verify=False) as c:
+            return await c.get(url, headers={"User-Agent": _ua})
+
+    # ── 第一步：获取 libgen.li/ads.php 页面，提取 get.php 下载链接 ──
+    ads_url = f"https://libgen.li/ads.php?md5={md5}"
+    get_path = None
+    libgen_db_error = False
+    libgen_no_entry = False
+
+    MAX_RETRIES = 2
+    for attempt in range(MAX_RETRIES):
+        if attempt > 0:
+            wait = 10 * attempt
+            _log.info(f"[BookImport] 第 {attempt+1} 次重试，等待 {wait}s...")
+            await _asyncio.sleep(wait)
+
+        for make_proxy in PROXIES:
+            proxy_url = make_proxy(ads_url)
+            try:
+                resp = await _get(proxy_url, timeout=30)
+                if resp.status_code != 200:
+                    continue
+                text = resp.text
+                if "get.php" in text:
+                    m = _re.search(
+                        r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', text
+                    )
+                    if m:
+                        get_path = m.group(1)
+                        _log.info(f"[BookImport] 解析到下载链接: {get_path}")
+                        break
+                elif "max_user_connections" in text or "database" in text.lower():
+                    libgen_db_error = True
+                    _log.warning("[BookImport] Libgen 数据库暂时过载，将重试")
+                elif len(resp.content) > 500 and "get.php" not in text:
+                    libgen_no_entry = True
+                    _log.info(f"[BookImport] 该 md5 在 Libgen 中无下载入口")
+            except Exception as ex:
+                _log.debug(f"[BookImport] ads.php 代理失败: {ex}")
+                continue
+
+        if get_path or libgen_no_entry:
+            break
+
+    if not get_path:
+        if libgen_db_error:
+            _log.warning(f"[BookImport] Libgen 数据库持续不可用 md5={md5}")
+        elif libgen_no_entry:
+            _log.info(f"[BookImport] 该书不在 Libgen 数据库中 md5={md5}")
+        else:
+            _log.warning(f"[BookImport] 无法访问 Libgen md5={md5}")
         return None
 
-    def _proxy(url: str) -> str:
-        return f"https://api.codetabs.com/v1/proxy/?quest={_quote(url, safe='')}"
+    # ── 第二步：通过代理下载 PDF（经实测最可靠的路径） ──
+    get_url = f"https://libgen.li/{get_path}"
+    _log.info(f"[BookImport] 开始下载 PDF: {get_url[:80]}")
 
-    def _allorigins(url: str) -> str:
-        return f"https://api.allorigins.win/raw?url={_quote(url, safe='')}"
+    for make_proxy in PROXIES:
+        proxy_dl_url = make_proxy(get_url)
+        try:
+            _log.info(f"[BookImport] 通过代理下载: {proxy_dl_url[:100]}")
+            resp = await _get(proxy_dl_url, timeout=180, follow=True)
+            if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
+                _log.info(f"[BookImport] PDF 下载成功! size={len(resp.content)}")
+                return resp.content
+            _log.warning(
+                f"[BookImport] 代理返回非 PDF: status={resp.status_code} "
+                f"size={len(resp.content)} head={resp.content[:10]!r}"
+            )
+        except Exception as ex:
+            _log.warning(f"[BookImport] 代理下载失败: {ex}")
 
-    # --- 策略 1: libgen.li ads.php -> get.php -> CDN ---
-    _log.info(f"[BookImport] 策略1: libgen.li/ads.php md5={md5}")
-    ads_url = f"https://libgen.li/ads.php?md5={md5}"
-    ads_html = None
-    libgen_db_error = False
-    for url in [_proxy(ads_url), _allorigins(ads_url), ads_url]:
-        raw = await _fetch(url)
-        if not raw:
-            continue
-        text = raw.decode("utf-8", errors="ignore")
-        if 'get.php' in text:
-            ads_html = text
-            break
-        if 'max_user_connections' in text or 'database' in text.lower():
-            _log.warning("[BookImport] Libgen 数据库暂时不可用（连接数已满），稍后重试")
-            libgen_db_error = True
+    # ── 第三步：备用 - 解析 CDN 重定向后直连 ──
+    _log.info("[BookImport] 尝试解析 CDN 重定向...")
+    cdn_url = None
+    try:
+        resp = await _get(get_url, timeout=15, follow=False)
+        if resp.status_code in (301, 302, 307, 308):
+            cdn_url = resp.headers.get("location")
+            _log.info(f"[BookImport] CDN: {cdn_url[:80] if cdn_url else 'N/A'}")
+    except Exception:
+        pass
 
-    if ads_html:
-        get_m = _re.search(r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', ads_html)
-        if get_m:
-            get_url = f"https://libgen.li/{get_m.group(1)}"
-            cdn_url = None
+    if cdn_url:
+        for make_proxy in PROXIES:
             try:
-                async with _httpx.AsyncClient(timeout=15, follow_redirects=False, verify=False) as c:
-                    rr = await c.get(get_url, headers={"User-Agent": _ua})
-                    if rr.status_code in (301, 302, 307, 308):
-                        cdn_url = rr.headers.get("location")
-                        _log.info(f"[BookImport] CDN redirect: {cdn_url[:80] if cdn_url else 'N/A'}")
+                resp = await _get(make_proxy(cdn_url), timeout=180, follow=True)
+                if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
+                    _log.info(f"[BookImport] CDN 代理下载成功! size={len(resp.content)}")
+                    return resp.content
             except Exception:
-                pass
+                continue
+        try:
+            resp = await _get(cdn_url, timeout=180, follow=True)
+            if resp.status_code == 200 and len(resp.content) > 1024 and resp.content[:4] == b"%PDF":
+                _log.info(f"[BookImport] CDN 直连下载成功! size={len(resp.content)}")
+                return resp.content
+        except Exception:
+            pass
 
-            for dl in ([_proxy(cdn_url), cdn_url] if cdn_url else []) + [_proxy(get_url), get_url]:
-                pdf = await _fetch_pdf(dl)
-                if pdf:
-                    return pdf
-
-    # --- 策略 2: library.lol ---
-    _log.info(f"[BookImport] 策略2: library.lol md5={md5}")
-    lol_url = f"https://library.lol/main/{md5}"
-    for url in [_proxy(lol_url), lol_url]:
-        raw = await _fetch(url)
-        if raw:
-            html_text = raw.decode("utf-8", errors="ignore")
-            dl_m = _re.search(r'href="(https?://[^"]+)"[^>]*>GET</a>', html_text)
-            if dl_m:
-                direct_url = dl_m.group(1)
-                for dl in [_proxy(direct_url), direct_url]:
-                    pdf = await _fetch_pdf(dl)
-                    if pdf:
-                        return pdf
-
-    # --- 策略 3: libgen.rs/libgen.is fiction ---
-    _log.info(f"[BookImport] 策略3: libgen.rs fiction md5={md5}")
-    fic_url = f"https://libgen.rs/fiction/{md5}"
-    for url in [_proxy(fic_url)]:
-        raw = await _fetch(url)
-        if raw:
-            html_text = raw.decode("utf-8", errors="ignore")
-            dl_m = _re.search(r'href="(https?://[^"]+)"[^>]*>GET</a>', html_text)
-            if dl_m:
-                pdf = await _fetch_pdf(dl_m.group(1))
-                if pdf:
-                    return pdf
-
-    _log.warning(f"[BookImport] 所有策略均失败 md5={md5}")
+    _log.warning(f"[BookImport] 所有下载路径均失败 md5={md5}")
     return None
 
 

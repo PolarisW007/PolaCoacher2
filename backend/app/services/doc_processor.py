@@ -284,19 +284,29 @@ async def _generate_cover_for_doc(doc_id: int) -> None:
             if doc.cover_url and doc.cover_url.startswith("http"):
                 try:
                     import httpx as _httpx
-                    async with _httpx.AsyncClient(timeout=15, verify=False) as _c:
-                        _r = await _c.get(doc.cover_url)
-                        if _r.status_code == 200 and len(_r.content) > 500:
-                            settings.COVER_DIR.mkdir(parents=True, exist_ok=True)
-                            ext = "jpg" if b"\xff\xd8\xff" in _r.content[:4] else "png"
-                            cover_filename = f"doc_{doc_id}_cover.{ext}"
-                            cover_path = settings.COVER_DIR / cover_filename
-                            with open(cover_path, "wb") as _f:
-                                _f.write(_r.content)
-                            doc.cover_url = f"/covers/{cover_filename}"
-                            await db.commit()
-                            logger.info(f"[Doc {doc_id}] 已下载外部封面图并保存: {cover_filename}")
-                            return
+                    from urllib.parse import quote as _q
+                    _cover_urls = [
+                        f"https://api.codetabs.com/v1/proxy/?quest={_q(doc.cover_url, safe='')}",
+                        doc.cover_url,
+                    ]
+                    for _cu in _cover_urls:
+                        try:
+                            async with _httpx.AsyncClient(timeout=20, verify=False) as _c:
+                                _r = await _c.get(_cu, headers={"User-Agent": "Mozilla/5.0"})
+                                if _r.status_code == 200 and len(_r.content) > 500:
+                                    settings.COVER_DIR.mkdir(parents=True, exist_ok=True)
+                                    ext = "jpg" if b"\xff\xd8\xff" in _r.content[:4] else "png"
+                                    cover_filename = f"doc_{doc_id}_cover.{ext}"
+                                    cover_path = settings.COVER_DIR / cover_filename
+                                    with open(cover_path, "wb") as _f:
+                                        _f.write(_r.content)
+                                    doc.cover_url = f"/covers/{cover_filename}"
+                                    await db.commit()
+                                    logger.info(f"[Doc {doc_id}] 已下载外部封面图并保存: {cover_filename}")
+                                    return
+                        except Exception:
+                            continue
+                    logger.warning(f"[Doc {doc_id}] 所有封面下载渠道失败，将使用 AI 生成")
                 except Exception as ex:
                     logger.warning(f"[Doc {doc_id}] 下载外部封面失败: {ex}，将使用 AI 生成")
 
