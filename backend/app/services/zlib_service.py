@@ -56,6 +56,10 @@ class _ZLibCredStore:
         self._cookies: dict = {}
         self._cookie_expire: float = 0.0
         self._lock = asyncio.Lock()
+        # 登录永久失败标记：凭据错误时设为 True，不再重复尝试
+        self._cred_invalid: bool = False
+        # 下次允许尝试登录的时间戳（域名超时时冷却 5 分钟）
+        self._retry_after: float = 0.0
 
     def init(self, email: str, password: str, secret_key: str) -> None:
         if not email or not password:
@@ -84,6 +88,25 @@ class _ZLibCredStore:
     @property
     def has_valid_session(self) -> bool:
         return bool(self._cookies) and time.time() < self._cookie_expire
+
+    @property
+    def login_useless(self) -> bool:
+        """凭据无效或仍在冷却期内，不应再尝试登录"""
+        if self._cred_invalid:
+            return True
+        if time.time() < self._retry_after:
+            return True
+        return False
+
+    def mark_cred_invalid(self) -> None:
+        """标记凭据永久无效（密码错误），后续不再尝试"""
+        self._cred_invalid = True
+        logger.warning("[ZLib] Credentials marked as invalid, will not retry login")
+
+    def set_cooldown(self, seconds: int = 300) -> None:
+        """域名超时/网络问题时设置冷却期"""
+        self._retry_after = time.time() + seconds
+        logger.info(f"[ZLib] Login cooldown set for {seconds}s")
 
     def set_cookies(self, cookies: dict) -> None:
         self._cookies = dict(cookies)
@@ -118,21 +141,25 @@ async def _do_login() -> bool:
         logger.warning("[ZLib] No credentials configured, skipping login")
         return False
 
+    if _cred_store.login_useless:
+        logger.debug("[ZLib] Login skipped: credentials invalid or in cooldown")
+        return False
+
     email = _cred_store.email
     password = _cred_store.password
 
     async with _cred_store._lock:
         if _cred_store.has_valid_session:
             return True
+        if _cred_store.login_useless:
+            return False
 
-        credential_error = False
+        any_network_error = False
         for domain in _ZLIB_DOMAINS:
-            if credential_error:
-                break
             login_url = f"https://{domain}/eapi/user/login"
             try:
                 async with httpx.AsyncClient(
-                    timeout=20, follow_redirects=True, verify=False
+                    timeout=10, follow_redirects=False, verify=False
                 ) as c:
                     resp = await c.post(
                         login_url,
@@ -145,6 +172,10 @@ async def _do_login() -> bool:
                             "Referer": f"https://{domain}/login",
                         },
                     )
+                    # 3xx 通常是 DDoS 保护跳转
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        logger.debug(f"[ZLib] {domain} redirect (bot-guard), skipping")
+                        continue
                     if resp.status_code not in (200, 201, 400):
                         logger.debug(f"[ZLib] {domain} HTTP {resp.status_code}, skipping")
                         continue
@@ -157,14 +188,21 @@ async def _do_login() -> bool:
                         _cred_store.set_cookies(dict(resp.cookies))
                         logger.info(f"[ZLib] Login OK via {domain}")
                         return True
-                    err = data.get("error", "unknown")
+                    err = str(data.get("error", "unknown"))
                     logger.warning(f"[ZLib] Login failed on {domain}: {err}")
-                    # 密码错误时不再尝试其他域
-                    if "password" in err.lower() or "email" in err.lower() or "incorrect" in err.lower():
-                        logger.warning("[ZLib] Credential mismatch — stopping login attempts")
-                        credential_error = True
+                    # 凭据错误时永久停止尝试
+                    if any(kw in err.lower() for kw in ("password", "email", "incorrect", "invalid", "wrong")):
+                        _cred_store.mark_cred_invalid()
+                        return False
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
+                logger.debug(f"[ZLib] Network error on {domain}: {e}")
+                any_network_error = True
             except Exception as e:
                 logger.debug(f"[ZLib] Login error on {domain}: {e}")
+
+        if any_network_error:
+            # 网络问题时冷却 5 分钟再试
+            _cred_store.set_cooldown(300)
 
         logger.warning("[ZLib] All domains failed to login")
         return False
@@ -174,6 +212,8 @@ async def ensure_zlib_session() -> bool:
     """确保有有效的 Z-Library 会话，返回是否成功"""
     if _cred_store.has_valid_session:
         return True
+    if _cred_store.login_useless:
+        return False
     return await _do_login()
 
 

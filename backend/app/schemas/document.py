@@ -112,3 +112,5 @@ class BookImportRequest(BaseModel):
     publish_year: int | None = None
     language: str | None = None
     source: str | None = None
+    # 书籍来源（lgrsnf/lgli/lgrs/zlib），用于决定下载策略
+    book_source: str = "lgrsnf"

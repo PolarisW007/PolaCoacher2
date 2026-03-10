@@ -572,9 +572,12 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         file_size: book.file_size,
         cover_url: book.cover_url || null,
         source: book.source || 'annas_archive',
+        book_source: book.book_source || 'lgrsnf',
       });
       if (book.can_auto_download) {
         message.success(`《${book.title}》正在自动下载并导入，请稍候...`);
+      } else if (book.book_source === 'zlib') {
+        message.success(`《${book.title}》正在通过 Z-Library 下载，请稍候...`);
       } else if (book.md5) {
         message.info(`《${book.title}》已添加到书架，请在书架中手动上传 PDF 文件`);
       } else {

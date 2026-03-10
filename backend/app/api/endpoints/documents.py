@@ -319,17 +319,26 @@ async def book_import(
     db.add(task)
     await db.commit()
 
-    asyncio.create_task(_download_and_process_pdf(task.id, doc.id, req.md5))
+    asyncio.create_task(_download_and_process_pdf(task.id, doc.id, req.md5, book_source=req.book_source))
     return ApiResponse.ok(data={"task_id": task.id, "document_id": doc.id}, msg="导入任务已创建，正在自动下载 PDF")
 
 
-async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> bytes | None:
+async def _try_download_pdf(
+    md5: str,
+    _ua: str,
+    _log,
+    _httpx,
+    _re,
+    _quote,
+    book_source: str = "lgrsnf",
+) -> bytes | None:
     """
     多策略下载 PDF，返回 bytes 或 None。
 
-    策略顺序（经服务器实测）：
+    策略顺序：
       1. libgen.li/ads.php → get.php（via codetabs/allorigins 代理）
       2. Anna's Archive md5 页面 → 提取 libgen.li/file.php?id= → ads.php → get.php
+      3. Z-Library（仅 zlib 来源书籍）
     """
     import asyncio as _asyncio
 
@@ -446,23 +455,31 @@ async def _try_download_pdf(md5: str, _ua: str, _log, _httpx, _re, _quote) -> by
         except Exception as ex:
             _log.debug(f"[BookImport] Anna Archive 代理失败: {ex}")
 
-    # ── 策略 3：Z-Library 下载（需要账号，用于 zlib 来源书籍） ──
-    _log.info(f"[BookImport] 策略3: Z-Library 下载 md5={md5}")
-    try:
-        from app.services.zlib_service import download_zlib_book
-        zlib_content = await download_zlib_book(md5)
-        if zlib_content:
-            _log.info(f"[BookImport] Z-Library 下载成功 size={len(zlib_content)}")
-            return zlib_content
-    except Exception as ex:
-        _log.debug(f"[BookImport] Z-Library 下载异常: {ex}")
+    # ── 策略 3：Z-Library 下载（仅 zlib 来源书籍，避免对 libgen 书重复超时等待） ──
+    if book_source == "zlib":
+        _log.info(f"[BookImport] 策略3: Z-Library 下载 md5={md5}")
+        try:
+            from app.services.zlib_service import download_zlib_book
+            zlib_content = await download_zlib_book(md5)
+            if zlib_content:
+                _log.info(f"[BookImport] Z-Library 下载成功 size={len(zlib_content)}")
+                return zlib_content
+        except Exception as ex:
+            _log.debug(f"[BookImport] Z-Library 下载异常: {ex}")
+    else:
+        _log.debug(f"[BookImport] 跳过 ZLib 策略（book_source={book_source}）")
 
     _log.warning(f"[BookImport] 所有下载策略均失败 md5={md5}")
     return None
 
 
-async def _download_and_process_pdf(task_id: int, doc_id: int, md5: str | None):
-    """从 Libgen 下载 PDF 并启动 AI 处理（模块级函数，供 import 和 retry 使用）"""
+async def _download_and_process_pdf(
+    task_id: int,
+    doc_id: int,
+    md5: str | None,
+    book_source: str = "lgrsnf",
+):
+    """从 Libgen/ZLib 下载 PDF 并启动 AI 处理（模块级函数，供 import 和 retry 使用）"""
     from app.core.database import async_session_factory
     import httpx as _httpx
     import re as _re
@@ -490,8 +507,8 @@ async def _download_and_process_pdf(task_id: int, doc_id: int, md5: str | None):
             if md5:
                 from urllib.parse import quote as _quote
 
-                _log.info(f"[BookImport] 下载 md5={md5}")
-                content = await _try_download_pdf(md5, _ua, _log, _httpx, _re, _quote)
+                _log.info(f"[BookImport] 下载 md5={md5} source={book_source}")
+                content = await _try_download_pdf(md5, _ua, _log, _httpx, _re, _quote, book_source=book_source)
 
                 if content:
                     t.progress = 80
@@ -647,7 +664,14 @@ async def retry_download(
         await db.commit()
         task_id = task.id
 
-    asyncio.create_task(_retry_download_task(task_id, doc_id, md5))
+    # 推断 book_source：source_type 含 zlib 或 source_url 含 z-lib 时走 zlib 策略
+    retry_book_source = "lgrsnf"
+    if doc.source_type and "zlib" in doc.source_type.lower():
+        retry_book_source = "zlib"
+    elif doc.source_url and "z-lib" in doc.source_url.lower():
+        retry_book_source = "zlib"
+
+    asyncio.create_task(_retry_download_task(task_id, doc_id, md5, book_source=retry_book_source))
     return ApiResponse.ok(
         data={"task_id": task_id, "document_id": doc_id},
         msg="正在重新下载 PDF，请稍候..."
