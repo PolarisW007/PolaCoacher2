@@ -14,18 +14,33 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 
 const PAGE_LIMIT = 50; // 在线最多渲染 50 页，超出提示下载
 
+// 将 PDF outline 扁平化为树形结构（react-pdf 返回的格式）
+function flattenOutline(items, depth = 0) {
+  if (!items || !items.length) return [];
+  return items.map((item) => ({
+    title: item.title,
+    page: item.dest?.[0]?._pageIndex != null ? item.dest[0]._pageIndex + 1 : null,
+    bold: item.bold,
+    italic: item.italic,
+    items: flattenOutline(item.items || [], depth + 1),
+  }));
+}
+
 /**
  * PdfViewer — 基于 react-pdf，支持带 JWT 认证的 PDF 渲染。
  * 超过 50 页时，第 50 页显示下载引导浮层，不再渲染后续页。
  *
  * Props:
- *   url          — PDF 的 API 地址（不含 token）
- *   currentPage  — 当前讲解页 (0-based)，自动跳转对应 PDF 页
- *   onPageChange — (pageNumber: number) 用户手动翻页回调 (1-based)
- *   height       — 容器高度，默认 '100%'
- *   filename     — 下载文件名（可选）
+ *   url           — PDF 的 API 地址（不含 token）
+ *   currentPage   — 当前讲解页 (0-based)，自动跳转对应 PDF 页（讲解播放模式用）
+ *   onPageChange  — (pageNumber: number) 用户手动翻页回调 (1-based)
+ *   onTotalPages  — (total: number) PDF 总页数回调
+ *   onOutline     — (tree: array) PDF 目录树回调
+ *   onGoToRef     — (fn) 注入跳页函数，供父组件调用
+ *   height        — 容器高度，默认 '100%'
+ *   filename      — 下载文件名（可选）
  */
-export default function PdfViewer({ url, currentPage = 0, onPageChange, height = '100%', filename = 'document.pdf' }) {
+export default function PdfViewer({ url, currentPage = 0, onPageChange, onTotalPages, onOutline, onGoToRef, height = '100%', filename = 'document.pdf' }) {
   const [numPages, setNumPages]     = useState(null);
   const [pageNumber, setPageNumber] = useState(1);   // 1-based
   const [scale, setScale]           = useState(1.0);
@@ -83,6 +98,12 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
     setPageNumber(page);
     onPageChange?.(page);
   };
+
+  // 注入跳页函数供父组件调用
+  useEffect(() => {
+    onGoToRef?.(goTo);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visiblePages]);
 
   const handleDownload = () => {
     const link = document.createElement('a');
@@ -205,7 +226,16 @@ export default function PdfViewer({ url, currentPage = 0, onPageChange, height =
             <Document
               key={key}
               file={authUrl()}
-              onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+              onLoadSuccess={({ numPages: n, ...docProxy }) => {
+                setNumPages(n);
+                onTotalPages?.(n);
+                // 解析 PDF outline（目录树）
+                if (onOutline) {
+                  docProxy._pdfInfo?.pdfDocument?.getOutline?.().then?.((outline) => {
+                    onOutline(flattenOutline(outline || []));
+                  }).catch(() => onOutline([]));
+                }
+              }}
               onLoadError={(err) => setDocError(err?.message || 'PDF 加载失败，请重试')}
               loading={
                 <div style={{ padding: 24, width: containerWidth || '100%' }}>

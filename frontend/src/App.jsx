@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ConfigProvider, App as AntdApp, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { theme } from './styles/theme';
@@ -13,8 +13,7 @@ const BookshelfPage = lazy(() => import('./pages/bookshelf/BookshelfPage'));
 const CommunityPage = lazy(() => import('./pages/community/CommunityPage'));
 const CommunityDetailPage = lazy(() => import('./pages/community/CommunityDetailPage'));
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
-const DocumentReader = lazy(() => import('./pages/reader/DocumentReader'));
-const DocumentPlayer = lazy(() => import('./pages/player/DocumentPlayer'));
+const DocumentReaderPage = lazy(() => import('./pages/reader/DocumentReaderPage'));
 const DocumentStudyPage = lazy(() => import('./pages/study/DocumentStudyPage'));
 const AiLecturePage = lazy(() => import('./pages/AiLecturePage'));
 const ShareCenterPage = lazy(() => import('./pages/ShareCenterPage'));
@@ -28,10 +27,6 @@ const PageLoader = (
   </div>
 );
 
-function RedirectToStudy() {
-  const { id } = useParams();
-  return <Navigate to={`/study/${id}`} replace />;
-}
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -90,8 +85,14 @@ function AppRoutes() {
               </ProtectedRoute>
             }
           />
-          <Route path="/reader/:id" element={<RedirectToStudy />} />
-          <Route path="/play/:id" element={<RedirectToStudy />} />
+          <Route
+            path="/play/:id"
+            element={
+              <ProtectedRoute>
+                <DocumentStudyPage />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/share"
             element={
@@ -117,6 +118,15 @@ function AppRoutes() {
             }
           />
         </Route>
+        {/* 全屏阅读器，脱出 MainLayout 侧边栏 */}
+        <Route
+          path="/reader/:id"
+          element={
+            <ProtectedRoute>
+              <DocumentReaderPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Suspense>

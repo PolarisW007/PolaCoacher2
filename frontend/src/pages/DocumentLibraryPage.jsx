@@ -157,7 +157,7 @@ export default function DocumentLibraryPage() {
             type="text"
             size="small"
             icon={<ReadOutlined />}
-            onClick={() => navigate(`/study/${record.id}`)}
+            onClick={() => navigate(`/reader/${record.id}`)}
           >
             阅读
           </Button>

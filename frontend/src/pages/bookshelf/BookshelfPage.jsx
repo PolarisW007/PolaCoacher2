@@ -100,8 +100,8 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
   }));
 
   const menuItems = [
-    { key: 'read', icon: <EyeOutlined />, label: '阅读文档' },
-    { key: 'play', icon: <PlayCircleOutlined />, label: '讲解播放', disabled: doc.status !== 'ready' },
+    { key: 'read', icon: <EyeOutlined />, label: '阅读原文' },
+    { key: 'play', icon: <PlayCircleOutlined />, label: 'AI讲解播放', disabled: doc.status !== 'ready' },
     { key: 'publish', icon: <GlobalOutlined />, label: '发布到社区', disabled: doc.status !== 'ready' },
     { key: 'share', icon: <ShareAltOutlined />, label: '分享到社区', disabled: doc.status !== 'ready' },
     ...(groupMenuItems.length > 0
@@ -124,7 +124,7 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
 
   const onMenuClick = async ({ key }) => {
     if (key === 'read') {
-      navigate(`/study/${doc.id}`);
+      navigate(`/reader/${doc.id}`);
     } else if (key === 'play') {
       navigate(`/study/${doc.id}`);
     } else if (key === 'publish') {
@@ -170,7 +170,7 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
     } else if (doc.status === 'pending_upload') {
       message.info('请先上传 PDF 文件');
     } else {
-      navigate(`/study/${doc.id}`);
+      navigate(`/reader/${doc.id}`);
     }
   };
 
