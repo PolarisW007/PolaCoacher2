@@ -13,7 +13,7 @@
  * - 切换 PDF 原文模式
  */
 import {
-  useCallback, useEffect, useLayoutEffect, useRef, useState,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -36,28 +36,49 @@ const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
 // ── 阅读设置常量 ──────────────────────────────────────────────
-const FONT_SIZE_OPTIONS = [
-  { label: '小', value: 14 },
-  { label: '中', value: 16 },
-  { label: '大', value: 18 },
+// 字号：5档，滑动条映射
+const FONT_SIZE_STEPS = [
+  { label: '特小', value: 14 },
+  { label: '小',   value: 16 },
+  { label: '中',   value: 18 },
+  { label: '大',   value: 20 },
   { label: '特大', value: 22 },
 ];
+
 const FONT_FAMILY_OPTIONS = [
-  { label: '默认', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-  { label: '宋体', value: '"SimSun", "STSong", serif' },
-  { label: '黑体', value: '"SimHei", "STHeiti", sans-serif' },
-  { label: '楷体', value: '"KaiTi", "STKaiti", cursive' },
+  { label: '默认',     value: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', sample: '文' },
+  { label: '宋体',     value: '"SimSun", "STSong", serif', sample: '文' },
+  { label: '黑体',     value: '"SimHei", "STHeiti", sans-serif', sample: '文' },
+  { label: '楷体',     value: '"KaiTi", "STKaiti", cursive', sample: '文' },
+  { label: '寒蝉正楷', value: '"寒蝉正楷体", "ChaCheerRegularKai", "KaiTi", cursive', sample: '文' },
+  { label: '仓耳今楷', value: '"仓耳今楷05", "TsangerJinKai05", "KaiTi", cursive', sample: '文' },
+  { label: '钉钉进步', value: '"DingTalk JinBuTi", "钉钉进步体", sans-serif', sample: '文' },
+  { label: '汇文正楷', value: '"Huiwen-mincho", "汇文正楷", "KaiTi", cursive', sample: '文' },
 ];
-const BG_OPTIONS = [
-  { label: '白色', value: '#ffffff', text: '#1a1a1a', key: 'white' },
-  { label: '护眼', value: '#f5f0e8', text: '#3a3028', key: 'warm' },
-  { label: '绿色', value: '#e8f5e9', text: '#1b4332', key: 'green' },
-  { label: '夜间', value: '#1a1a2e', text: '#e0e0e0', key: 'dark' },
+
+// 纯色背景
+const SOLID_BG_OPTIONS = [
+  { label: '白色', value: '#ffffff', text: '#1a1a1a', key: 'white', type: 'solid' },
+  { label: '护眼', value: '#f5f0e8', text: '#3a3028', key: 'warm',  type: 'solid' },
+  { label: '绿色', value: '#e8f5e9', text: '#1b4332', key: 'green', type: 'solid' },
+  { label: '夜间', value: '#1a1a2e', text: '#e0e0e0', key: 'dark',  type: 'solid' },
 ];
+
+// 背景图片选项（4张竖版图，响应式展示）
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+const STARRY_BG_OPTIONS = [
+  { label: '星空一', key: 'star1', type: 'image', url: `${BASE}/bg/s1.webp`, thumb: `${BASE}/bg/thumb1.webp`, value: '#060810', text: '#e8e8e8' },
+  { label: '星空二', key: 'star2', type: 'image', url: `${BASE}/bg/s2.webp`, thumb: `${BASE}/bg/thumb2.webp`, value: '#060810', text: '#e8e8e8' },
+  { label: '星空三', key: 'star3', type: 'image', url: `${BASE}/bg/s3.webp`, thumb: `${BASE}/bg/thumb3.webp`, value: '#060810', text: '#e8e8e8' },
+  { label: '星空四', key: 'star4', type: 'image', url: `${BASE}/bg/s4.webp`, thumb: `${BASE}/bg/thumb4.webp`, value: '#060810', text: '#e8e8e8' },
+];
+
+const BG_OPTIONS = [...SOLID_BG_OPTIONS, ...STARRY_BG_OPTIONS];
+
 const LINE_HEIGHT_OPTIONS = [
   { label: '紧凑', value: 1.6 },
   { label: '标准', value: 1.9 },
-  { label: '宽松', value: 2.3 },
+  { label: '宽松', value: 2.4 },
 ];
 const HIGHLIGHT_COLORS = [
   { key: 'yellow', bg: 'rgba(255, 241, 0, 0.45)', border: '#fadb14', label: '黄色' },
@@ -66,8 +87,16 @@ const HIGHLIGHT_COLORS = [
   { key: 'pink',   bg: 'rgba(235, 47, 150, 0.28)', border: '#eb2f96', label: '粉色' },
 ];
 
-const PREFS_KEY = 'reader_prefs_v1';
-const defaultPrefs = { fontSize: 17, fontFamily: FONT_FAMILY_OPTIONS[0].value, bg: BG_OPTIONS[0].key, lineHeight: 1.9 };
+const PREFS_KEY = 'reader_prefs_v2';
+const defaultPrefs = { fontSize: 18, fontFamily: FONT_FAMILY_OPTIONS[0].value, bg: BG_OPTIONS[0].key, lineHeight: 1.9 };
+
+// 图片背景时用各自的深色底色，图片通过 <img> 绝对定位叠放
+function getBgStyle(bgConfig) {
+  if (bgConfig.type === 'image') {
+    return { background: bgConfig.value || '#0d0d1a' };
+  }
+  return { background: bgConfig.value };
+}
 
 function loadPrefs() {
   try { return { ...defaultPrefs, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; }
@@ -87,6 +116,51 @@ function saveProgress(docId, chapterId, scrollTop) {
 function langLabel(lang) {
   const map = { zh: '中文', en: '英文', ja: '日文', ko: '韩文', fr: '法文', de: '德文' };
   return map[lang] || lang?.toUpperCase() || '未知';
+}
+
+// ── 渐进式背景图组件 ──────────────────────────────────────────
+// 先展示 1KB 的 thumb，原图加载完成后无缝替换，避免白屏等待
+const BG_IMG_STYLE = `
+  .reader-bg-img {
+    position: fixed;
+    top: 0; left: 0;
+    z-index: 0;
+    pointer-events: none;
+    display: block;
+    transition: opacity 0.6s ease;
+  }
+  /* 横屏/PC：cover 填满视口，居中裁切 */
+  @media (orientation: landscape) {
+    .reader-bg-img { width: 100%; height: 100%; object-fit: cover; object-position: center; }
+  }
+  /* 竖屏/手机：宽度铺满，高度等比自然延伸 */
+  @media (orientation: portrait) {
+    .reader-bg-img { width: 100%; height: auto; object-fit: fill; object-position: top center; }
+  }
+  .reader-bg-overlay {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background: rgba(0,0,0,0.45);
+  }
+`;
+
+function BgImage({ url, thumb }) {
+  const [src, setSrc] = useState(thumb || url);
+
+  useEffect(() => {
+    setSrc(thumb || url); // 切换背景时先显示 thumb
+    if (!thumb || thumb === url) return;
+    const img = new Image();
+    img.onload = () => setSrc(url); // 原图加载完毕后替换
+    img.src = url;
+  }, [url, thumb]);
+
+  return (
+    <>
+      <style>{BG_IMG_STYLE}</style>
+      <img src={src} alt="" className="reader-bg-img" draggable={false} />
+      <div className="reader-bg-overlay" />
+    </>
+  );
 }
 
 export default function DocumentReaderPage() {
@@ -150,14 +224,103 @@ export default function DocumentReaderPage() {
   const [pdfTotal, setPdfTotal] = useState(0);
   const pdfGoToRef = useRef(null);
 
-  // ── 阅读区 ref ────────────────────────────────────────────
+  // ── 沉浸式阅读态 (控制栏显隐) ─────────────────────────────
+  const [controlsVisible, setControlsVisible] = useState(true);
+
+  // ── 阅读区 ref（需要在 turnPage 前声明）────────────────────
   const readingAreaRef = useRef(null);
+  const contentContainerRef = useRef(null);
+
+  // ── scroll-snap 横向翻页相关 ────────────────────────────
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const [totalPagesComputed, setTotalPagesComputed] = useState(1);
+
+  // 翻页函数：直接操作 scrollLeft 实现 scroll-snap 翻页
+  const turnPage = useCallback((direction) => {
+    const container = readingAreaRef.current;
+    if (!container) return;
+    const pageWidth = container.clientWidth;
+    if (direction === 'next') {
+      const newIdx = Math.min(currentPageIndex + 1, totalPagesComputed - 1);
+      container.scrollTo({ left: newIdx * pageWidth, behavior: 'smooth' });
+      setCurrentPageIndex(newIdx);
+    } else if (direction === 'prev') {
+      const newIdx = Math.max(currentPageIndex - 1, 0);
+      container.scrollTo({ left: newIdx * pageWidth, behavior: 'smooth' });
+      setCurrentPageIndex(newIdx);
+    }
+  }, [currentPageIndex, totalPagesComputed]);
+
+  // 监听滚动同步更新 currentPageIndex（支持触摸/鼠标滑动）
+  useEffect(() => {
+    const container = readingAreaRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      const pageWidth = container.clientWidth;
+      if (pageWidth === 0) return;
+      const newIdx = Math.round(container.scrollLeft / pageWidth);
+      setCurrentPageIndex(newIdx);
+    };
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // ── 窗口宽度响应式（宽屏双栏） ─────────────────────────────
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  useEffect(() => {
+    const handler = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  // 宽屏（>= 1100px）时两页并排
+  const isDualPage = windowWidth >= 1100;
+
+  // ── 分页组计算（提升到组件级别，用于同步 totalPagesComputed） ──
+  const pageGroups = useMemo(() => {
+    if (!contentReady || paragraphs.length === 0) return [];
+    const allHavePage = paragraphs.some((p) => (p.page || 0) > 0);
+    const groups = [];
+    if (allHavePage) {
+      const pageMap = new Map();
+      for (const p of paragraphs) {
+        const pg = p.page || 1;
+        if (!pageMap.has(pg)) pageMap.set(pg, []);
+        pageMap.get(pg).push(p);
+      }
+      const sortedPages = [...pageMap.keys()].sort((a, b) => a - b);
+      for (const pg of sortedPages) {
+        groups.push({ page: pg, paras: pageMap.get(pg) });
+      }
+    } else {
+      for (const ch of chapters) {
+        const chParas = paragraphs.filter(p => p.chapter_id === ch.id);
+        if (chParas.length > 0) {
+          groups.push({ page: ch.id, paras: chParas });
+        }
+      }
+      const noChapterParas = paragraphs.filter(p => !p.chapter_id);
+      if (noChapterParas.length > 0) groups.push({ page: 0, paras: noChapterParas });
+    }
+    return groups;
+  }, [contentReady, paragraphs, chapters]);
+
+  // 同步 totalPagesComputed（双栏时按 pairs 计算）
+  useEffect(() => {
+    const total = isDualPage ? Math.ceil(pageGroups.length / 2) : pageGroups.length;
+    setTotalPagesComputed(Math.max(total, 1));
+    setCurrentPageIndex(0);
+    if (readingAreaRef.current) {
+      readingAreaRef.current.scrollTo({ left: 0, behavior: 'auto' });
+    }
+  }, [pageGroups.length, isDualPage]);
   const chapterRefs = useRef({});   // {chapterId: DOM}
   const startTimeRef = useRef(Date.now());
 
   // ─────────────────────────────────────────────────────────
   // 当前 BG 配置
   const bgConfig = BG_OPTIONS.find((b) => b.key === prefs.bg) || BG_OPTIONS[0];
+  // 星空图片背景和夜间模式都属于深色模式，统一处理
+  const isDarkMode = bgConfig.key === 'dark' || bgConfig.type === 'image';
 
   // ─────────────────────────────────────────────────────────
   // 加载文档基础信息
@@ -242,17 +405,24 @@ export default function DocumentReaderPage() {
   // 阅读进度恢复
   // ─────────────────────────────────────────────────────────
   useLayoutEffect(() => {
-    if (!contentReady || !readingAreaRef.current) return;
+    if (!contentReady || pageGroups.length === 0 || !readingAreaRef.current) return;
     const saved = loadProgress(id);
     if (!saved) return;
     setTimeout(() => {
-      if (saved.chapterId && chapterRefs.current[saved.chapterId]) {
-        chapterRefs.current[saved.chapterId].scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } else if (saved.scrollTop && readingAreaRef.current) {
-        readingAreaRef.current.scrollTop = saved.scrollTop;
+      if (saved.chapterId) {
+        const firstPara = paragraphs.find(p => p.chapter_id === saved.chapterId);
+        if (firstPara) {
+          const rawIdx = pageGroups.findIndex(g => g.paras.includes(firstPara));
+          if (rawIdx >= 0 && readingAreaRef.current) {
+            const snapIdx = isDualPage ? Math.floor(rawIdx / 2) : rawIdx;
+            const pageWidth = readingAreaRef.current.clientWidth;
+            readingAreaRef.current.scrollTo({ left: snapIdx * pageWidth, behavior: 'auto' });
+            setCurrentPageIndex(snapIdx);
+          }
+        }
       }
     }, 300);
-  }, [contentReady, id]);
+  }, [contentReady, id, pageGroups, paragraphs, isDualPage]);
 
   // 阅读进度保存（滚动时 debounce）
   useEffect(() => {
@@ -307,7 +477,7 @@ export default function DocumentReaderPage() {
       if (mainView === 'pdf') {
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') pdfGoToRef.current?.(pdfPage + 1);
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') pdfGoToRef.current?.(pdfPage - 1);
-      } else if (mainView === 'text') {
+      } else if (mainView === 'text' && turnPage) {
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') turnPage('next');
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') turnPage('prev');
       }
@@ -510,16 +680,16 @@ export default function DocumentReaderPage() {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // ── 沉浸式阅读态 (控制栏显隐) ─────────────────────────────
-  const [controlsVisible, setControlsVisible] = useState(true);
-
   // ─────────────────────────────────────────────────────────
   // 渲染：顶栏
   // ─────────────────────────────────────────────────────────
   const renderTopBar = () => (
     <div style={{
       height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '0 14px', background: bgConfig.value, borderBottom: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#e8e8e8'}`,
+      padding: '0 14px',
+      background: bgConfig.type === 'image' ? 'rgba(0,0,0,0.45)' : bgConfig.key === 'dark' ? '#1a1a2e' : bgConfig.value,
+      backdropFilter: bgConfig.type === 'image' ? 'blur(6px)' : 'none',
+      borderBottom: `1px solid ${bgConfig.type === 'image' || bgConfig.key === 'dark' ? 'rgba(255,255,255,0.1)' : '#e8e8e8'}`,
       flexShrink: 0, gap: 10, zIndex: 100,
       position: 'absolute', top: 0, left: 0, right: 0,
       transform: controlsVisible ? 'translateY(0)' : 'translateY(-100%)',
@@ -599,101 +769,162 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   const renderSettings = () => {
     if (!settingsOpen) return null;
+    const isDark = bgConfig.key === 'dark' || bgConfig.type === 'image';
+    const panelBg = isDark ? 'rgba(30,30,50,0.97)' : '#fff';
+    const labelColor = isDark ? '#ccc' : '#666';
+    const textColor = isDark ? '#eee' : '#222';
+    const borderColor = isDark ? 'rgba(255,255,255,0.15)' : '#e8e8e8';
+
     const update = (key, val) => {
       const next = { ...prefs, [key]: val };
       setPrefs(next);
       savePrefs(next);
     };
+
+    // 当前字号在 FONT_SIZE_STEPS 中的 index
+    const fontSizeIdx = FONT_SIZE_STEPS.findIndex(s => s.value === prefs.fontSize);
+    const currentFontSizeIdx = fontSizeIdx >= 0 ? fontSizeIdx : 1;
+
     return (
       <div style={{
-        background: bgConfig.key === 'dark' ? '#222' : '#fff', 
-        borderRadius: 16, 
-        boxShadow: '0 -8px 30px rgba(0,0,0,0.12)',
-        padding: '24px', 
-        width: 380,
-        color: bgConfig.text,
+        background: panelBg,
+        borderRadius: 20,
+        boxShadow: '0 -8px 40px rgba(0,0,0,0.18)',
+        padding: '28px 24px 24px',
+        width: 420,
+        color: textColor,
+        backdropFilter: 'blur(12px)',
       }}>
-        {/* 字号 */}
-        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>字号</Text>
-          <Space style={{ flex: 1, justifyContent: 'space-between' }}>
-            {FONT_SIZE_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value} size="middle"
-                type={prefs.fontSize === opt.value ? 'primary' : 'default'}
-                style={{ 
-                  borderRadius: 20, fontSize: opt.value === 22 ? 14 : 13,
-                  background: prefs.fontSize === opt.value ? undefined : 'transparent',
-                  borderColor: prefs.fontSize === opt.value ? undefined : '#d9d9d9',
-                  color: prefs.fontSize === opt.value ? undefined : bgConfig.text,
-                }}
-                onClick={() => update('fontSize', opt.value)}
-              >
-                {opt.label}
-              </Button>
-            ))}
-          </Space>
+        {/* ── 字号滑动条 ── */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontSize: 13, color: labelColor }}>字号</span>
+            <span style={{ fontSize: 13, color: '#1890ff', fontWeight: 600 }}>
+              {FONT_SIZE_STEPS[currentFontSizeIdx].label}（{FONT_SIZE_STEPS[currentFontSizeIdx].value}px）
+            </span>
+          </div>
+          <div style={{ position: 'relative', padding: '0 4px' }}>
+            <input
+              type="range" min={0} max={4} step={1}
+              value={currentFontSizeIdx}
+              onChange={(e) => update('fontSize', FONT_SIZE_STEPS[Number(e.target.value)].value)}
+              style={{ width: '100%', accentColor: '#1890ff', cursor: 'pointer', height: 4 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+              {FONT_SIZE_STEPS.map((s) => (
+                <span key={s.value} style={{ fontSize: 11, color: labelColor, width: 32, textAlign: 'center' }}>{s.label}</span>
+              ))}
+            </div>
+          </div>
         </div>
-        {/* 字体 */}
-        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>字体</Text>
-          <Space style={{ flex: 1, justifyContent: 'space-between' }}>
-            {FONT_FAMILY_OPTIONS.map((opt) => (
-              <Button
-                key={opt.label} size="middle"
-                type={prefs.fontFamily === opt.value ? 'primary' : 'default'}
-                style={{ 
-                  borderRadius: 20, fontFamily: opt.value,
-                  background: prefs.fontFamily === opt.value ? undefined : 'transparent',
-                  borderColor: prefs.fontFamily === opt.value ? undefined : '#d9d9d9',
-                  color: prefs.fontFamily === opt.value ? undefined : bgConfig.text,
-                }}
-                onClick={() => update('fontFamily', opt.value)}
-              >
-                {opt.label}
-              </Button>
-            ))}
-          </Space>
+
+        <div style={{ borderTop: `1px solid ${borderColor}`, marginBottom: 22 }} />
+
+        {/* ── 字体网格 ── */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 13, color: labelColor, marginBottom: 12 }}>字体</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            {FONT_FAMILY_OPTIONS.map((opt) => {
+              const isActive = prefs.fontFamily === opt.value;
+              return (
+                <button
+                  key={opt.label}
+                  onClick={() => update('fontFamily', opt.value)}
+                  style={{
+                    padding: '10px 4px',
+                    borderRadius: 12,
+                    border: isActive ? '2px solid #1890ff' : `1px solid ${borderColor}`,
+                    background: isActive ? 'rgba(24,144,255,0.12)' : 'transparent',
+                    cursor: 'pointer',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <span style={{ fontFamily: opt.value, fontSize: 20, color: isActive ? '#1890ff' : textColor, lineHeight: 1 }}>文</span>
+                  <span style={{ fontSize: 10, color: isActive ? '#1890ff' : labelColor, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 60 }}>{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-        {/* 行距 */}
-        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>行距</Text>
-          <Space style={{ flex: 1, justifyContent: 'flex-start', gap: 20 }}>
-            {LINE_HEIGHT_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value} size="middle"
-                type={prefs.lineHeight === opt.value ? 'primary' : 'default'}
-                style={{ 
-                  borderRadius: 20,
-                  background: prefs.lineHeight === opt.value ? undefined : 'transparent',
-                  borderColor: prefs.lineHeight === opt.value ? undefined : '#d9d9d9',
-                  color: prefs.lineHeight === opt.value ? undefined : bgConfig.text,
-                }}
-                onClick={() => update('lineHeight', opt.value)}
-              >
-                {opt.label}
-              </Button>
-            ))}
-          </Space>
+
+        <div style={{ borderTop: `1px solid ${borderColor}`, marginBottom: 22 }} />
+
+        {/* ── 行距 ── */}
+        <div style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 13, color: labelColor, marginBottom: 12 }}>行距</div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {LINE_HEIGHT_OPTIONS.map((opt) => {
+              const isActive = prefs.lineHeight === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => update('lineHeight', opt.value)}
+                  style={{
+                    flex: 1, padding: '8px 0',
+                    borderRadius: 12,
+                    border: isActive ? '2px solid #1890ff' : `1px solid ${borderColor}`,
+                    background: isActive ? 'rgba(24,144,255,0.12)' : 'transparent',
+                    cursor: 'pointer',
+                    fontSize: 13, color: isActive ? '#1890ff' : textColor,
+                    fontWeight: isActive ? 600 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        {/* 背景 */}
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>背景</Text>
-          <Space style={{ flex: 1, justifyContent: 'flex-start', gap: 20 }}>
-            {BG_OPTIONS.map((opt) => (
+
+        <div style={{ borderTop: `1px solid ${borderColor}`, marginBottom: 22 }} />
+
+        {/* ── 背景：纯色 + 星空 ── */}
+        <div>
+          <div style={{ fontSize: 13, color: labelColor, marginBottom: 12 }}>背景</div>
+          {/* 纯色行 */}
+          <div style={{ display: 'flex', gap: 12, marginBottom: 14, alignItems: 'center' }}>
+            {SOLID_BG_OPTIONS.map((opt) => (
               <button
                 key={opt.key}
                 onClick={() => update('bg', opt.key)}
                 title={opt.label}
                 style={{
-                  width: 36, height: 36, borderRadius: '50%', background: opt.value,
-                  border: prefs.bg === opt.key ? '2px solid #1890ff' : '2px solid #e0e0e0',
-                  boxShadow: prefs.bg === opt.key ? '0 0 0 2px rgba(24,144,255,0.2)' : 'none',
-                  cursor: 'pointer', padding: 0, transition: 'all 0.2s',
+                  width: 38, height: 38, borderRadius: '50%', background: opt.value,
+                  border: prefs.bg === opt.key ? '2.5px solid #1890ff' : `2px solid ${borderColor}`,
+                  boxShadow: prefs.bg === opt.key ? '0 0 0 3px rgba(24,144,255,0.25)' : 'none',
+                  cursor: 'pointer', padding: 0, transition: 'all 0.2s', flexShrink: 0,
                 }}
               />
             ))}
-          </Space>
+          </div>
+          {/* 背景图缩略图行 */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+            {STARRY_BG_OPTIONS.map((opt) => {
+              const isActive = prefs.bg === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => update('bg', opt.key)}
+                  title={opt.label}
+                  style={{
+                    width: 64, height: 44, borderRadius: 10, padding: 0,
+                    border: isActive ? '2.5px solid #1890ff' : `2px solid ${borderColor}`,
+                    boxShadow: isActive ? '0 0 0 3px rgba(24,144,255,0.25)' : 'none',
+                    cursor: 'pointer', transition: 'all 0.2s', flexShrink: 0,
+                    overflow: 'hidden', background: '#eee', position: 'relative',
+                  }}
+                >
+                  <img
+                    src={opt.thumb || opt.url}
+                    alt={opt.label}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  />
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
@@ -706,13 +937,13 @@ export default function DocumentReaderPage() {
     if (!tocOpen) return null;
     return (
       <div style={{
-        width: 240, flexShrink: 0, background: bgConfig.key === 'dark' ? '#16213e' : '#fafafa',
-        borderRight: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
+        width: 240, flexShrink: 0, background: isDarkMode ? '#16213e' : '#fafafa',
+        borderRight: `1px solid ${isDarkMode ? '#333' : '#f0f0f0'}`,
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         transition: 'background 0.3s',
       }}>
         <div style={{
-          padding: '12px 16px', borderBottom: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
+          padding: '12px 16px', borderBottom: `1px solid ${isDarkMode ? '#333' : '#f0f0f0'}`,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
         }}>
           <Text strong style={{ fontSize: 13, color: bgConfig.text }}>目录</Text>
@@ -732,18 +963,18 @@ export default function DocumentReaderPage() {
               <div
                 key={ch.id}
                 onClick={() => {
-                  // 在基于 column 的布局中，跳到对应章节意味着：
-                  // 1. 计算目标元素相对于 contentContainer 的左侧偏移
-                  // 2. 根据容器宽度将偏移转化为页码
-                  const el = chapterRefs.current[ch.id];
-                  if (el && contentContainerRef.current && readingAreaRef.current) {
-                    const offsetLeft = el.offsetLeft;
-                    const containerWidth = readingAreaRef.current.clientWidth;
-                    const columnGap = 60;
-                    const effectivePageWidth = containerWidth + columnGap;
-                    const targetPage = Math.floor(offsetLeft / effectivePageWidth);
-                    setCurrentPageIndex(Math.max(0, targetPage));
+                  // scroll-snap 方案：找到包含该章节第一段的页的 index
+                  const firstParaOfChapter = paragraphs.find(p => p.chapter_id === ch.id);
+                  if (firstParaOfChapter) {
+                    const rawPageIdx = pageGroups.findIndex(g => g.paras.includes(firstParaOfChapter));
+                    if (rawPageIdx >= 0 && readingAreaRef.current) {
+                      const snapIdx = isDualPage ? Math.floor(rawPageIdx / 2) : rawPageIdx;
+                      const pageWidth = readingAreaRef.current.clientWidth;
+                      readingAreaRef.current.scrollTo({ left: snapIdx * pageWidth, behavior: 'smooth' });
+                      setCurrentPageIndex(snapIdx);
+                    }
                   }
+                  setTocOpen(false);
                 }}
                 style={{
                   padding: `7px ${16 + (ch.level - 1) * 14}px`,
@@ -759,7 +990,7 @@ export default function DocumentReaderPage() {
                   ellipsis
                   style={{
                     fontSize: 14 - (ch.level - 1),
-                    color: isActive ? '#1890ff' : bgConfig.key === 'dark' ? '#ccc' : '#444',
+                    color: isActive ? '#1890ff' : isDarkMode ? '#ccc' : '#444',
                     fontWeight: isActive ? 600 : ch.level === 1 ? 500 : 400,
                   }}
                   title={title}
@@ -810,8 +1041,9 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   // 渲染：主文本阅读区
   // ─────────────────────────────────────────────────────────
-  
-    const renderTextView = () => {
+
+  // 翻页函数
+  const renderTextView = () => {
     if (contentLoading) {
       return (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, background: bgConfig.value }}>
@@ -843,199 +1075,236 @@ export default function DocumentReaderPage() {
       );
     }
 
-    // 在 CSS Column 模式下，我们将所有段落连在一起渲染
-    const allParas = paragraphs;
-
-    const columnGap = 60;
-    // contentStyle 控制的是整个可以无限向右延伸的内容容器
-    const contentStyle = {
-      fontFamily: prefs.fontFamily,
-      fontSize: prefs.fontSize,
-      lineHeight: prefs.lineHeight,
-      color: bgConfig.text,
-      // 核心 CSS Multi-column 属性
-      columnCount: columns,
-      columnGap: `${columnGap}px`,
-      // 视口高度减去顶底边距，确保内容不会垂直溢出，而是流向下一列
-      height: 'calc(100vh - 120px)',
-      // 为了支持内部元素的 margin 不引起撑破，设置 padding
-      padding: '60px 40px',
-      boxSizing: 'border-box',
-      // 横向平滑移动实现翻页
-      transform: `translateX(calc(-${currentPageIndex * 100}% - ${currentPageIndex * columnGap}px))`,
-      transition: 'transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
-      willChange: 'transform',
+    // pageGroups 已在组件级 useMemo 中计算，这里直接使用
+    const renderPageContent = (paras) => {
+      return paras.map((para) => (
+        <ParagraphBlock
+          key={para.id}
+          para={para}
+          langMode={langMode}
+          translationMap={translationMap}
+          translationStatus={translationStatus}
+          prefs={prefs}
+          bgConfig={bgConfig}
+          highlights={highlights}
+          renderParaText={renderParaText}
+          apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
+        />
+      ));
     };
 
     return (
       <div
-        ref={readingAreaRef}
-        onClick={(e) => {
-          // 点击页面空白处，切换控制栏显示/隐藏
-          if (window.getSelection().toString().length > 0) return;
-          if (e.target.closest('button') || e.target.closest('input')) return;
-          
-          // 如果点击区域在最左侧 20% 或最右侧 20%，则视为翻页操作
-          const rect = readingAreaRef.current.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          if (x < rect.width * 0.2) {
-             turnPage('prev');
-             return;
-          }
-          if (x > rect.width * 0.8) {
-             turnPage('next');
-             return;
-          }
-
-          setControlsVisible(!controlsVisible);
-        }}
         style={{ 
           flex: 1, 
-          // 禁止滚动，由 transform 控制
           overflow: 'hidden', 
-          background: bgConfig.value, 
+          ...getBgStyle(bgConfig),
           transition: 'background 0.3s', 
-          position: 'relative' 
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
-        <div ref={contentContainerRef} style={contentStyle}>
-          {chapters.map((ch) => {
-            const chParas = allParas.filter(p => p.chapter_id === ch.id);
-            if (chParas.length === 0) return null;
-            
-            const translatedTitle = translatedChapterTitles[ch.id];
-            const chapterTitle = langMode === 'translated' && translatedTitle ? translatedTitle : ch.title;
-            
-            return (
-              <div 
-                key={ch.id} 
-                ref={(el) => { chapterRefs.current[ch.id] = el; }} 
-                data-chapter-id={ch.id}
-                // 确保章节标题不被强制截断
-                style={{ breakInside: 'avoid-column' }}
-              >
-                {/* 章节标题 */}
-                {ch.level === 1 ? (
-                  <h2 style={{
-                    fontSize: prefs.fontSize + 6, fontWeight: 700, color: bgConfig.text,
-                    marginBottom: 20, marginTop: 40, lineHeight: 1.4,
-                    borderBottom: `2px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
-                    paddingBottom: 12,
-                    columnSpan: 'all', // 如果支持，标题可以跨列，但这在基于 column 的分页中可能引起不可控的排版，一般不设
-                  }}>
-                    {chapterTitle}
-                    {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
-                      <div style={{ fontSize: prefs.fontSize + 2, color: '#888', fontWeight: 400, marginTop: 4 }}>{translatedTitle}</div>
-                    )}
-                  </h2>
-                ) : (
-                  <h3 style={{
-                    fontSize: prefs.fontSize + 3, fontWeight: 600, color: bgConfig.text,
-                    marginBottom: 14, marginTop: 28, lineHeight: 1.4,
-                  }}>
-                    {chapterTitle}
-                    {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
-                      <div style={{ fontSize: prefs.fontSize + 1, color: '#888', fontWeight: 400, marginTop: 3 }}>{translatedTitle}</div>
-                    )}
-                  </h3>
+        {/* 背景图片 + 半透明磨砂遮罩（响应式 + 渐进式加载） */}
+        {bgConfig.type === 'image' && (
+          <BgImage url={bgConfig.url} thumb={bgConfig.thumb} />
+        )}
+        {/* 主阅读区 - 横向 scroll-snap 容器 */}
+        <div
+          ref={readingAreaRef}
+          onClick={(e) => {
+            if (window.getSelection().toString().length > 0) return;
+            if (e.target.closest('button') || e.target.closest('input')) return;
+            const rect = readingAreaRef.current.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            if (x < rect.width * 0.2) { turnPage('prev'); return; }
+            if (x > rect.width * 0.8) { turnPage('next'); return; }
+            setControlsVisible(v => !v);
+          }}
+          style={{
+            flex: 1,
+            display: 'flex',
+            overflowX: 'hidden',
+            overflowY: 'hidden',
+            scrollSnapType: 'x mandatory',
+            scrollBehavior: 'smooth',
+            position: 'relative',
+          }}
+        >
+          {pageGroups.length === 0 ? (
+            <div style={{
+              minWidth: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexDirection: 'column', gap: 16, padding: 40,
+            }}>
+              <FileTextOutlined style={{ fontSize: 48, color: '#ccc' }} />
+              <Text style={{ color: bgConfig.text }}>暂无内容</Text>
+            </div>
+          ) : (() => {
+            // 渲染单页内容的辅助函数
+            const renderOnePageContent = (paras, pageChapters, globalIdx) => (
+              <>
+                {pageChapters.map(ch => {
+                  const translatedTitle = translatedChapterTitles[ch.id];
+                  const title = langMode === 'translated' && translatedTitle ? translatedTitle : ch.title;
+                  return (
+                    <div key={ch.id} ref={el => { chapterRefs.current[ch.id] = el; }} data-chapter-id={ch.id}>
+                      {ch.level === 1 ? (
+                        <h2 style={{
+                          fontSize: prefs.fontSize + 6, fontWeight: 700, color: bgConfig.text,
+                          marginBottom: 20, marginTop: 8, lineHeight: 1.4,
+                          borderBottom: `2px solid ${bgConfig.type === 'image' || bgConfig.key === 'dark' ? 'rgba(255,255,255,0.15)' : '#f0f0f0'}`,
+                          paddingBottom: 12,
+                        }}>
+                          {title}
+                          {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
+                            <div style={{ fontSize: prefs.fontSize + 2, color: bgConfig.text, opacity: 0.6, fontWeight: 400, marginTop: 4 }}>{translatedTitle}</div>
+                          )}
+                        </h2>
+                      ) : (
+                        <h3 style={{
+                          fontSize: prefs.fontSize + 3, fontWeight: 600, color: bgConfig.text,
+                          marginBottom: 14, marginTop: 28, lineHeight: 1.4,
+                        }}>
+                          {title}
+                          {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
+                            <div style={{ fontSize: prefs.fontSize + 1, color: bgConfig.text, opacity: 0.6, fontWeight: 400, marginTop: 3 }}>{translatedTitle}</div>
+                          )}
+                        </h3>
+                      )}
+                    </div>
+                  );
+                })}
+                {renderPageContent(paras)}
+                {globalIdx === pageGroups.length - 1 && (
+                  <div style={{ textAlign: 'center', marginTop: 48, padding: '24px 0', opacity: 0.5 }}>
+                    <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
+                    <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
+                  </div>
                 )}
-
-                {/* 章节段落 */}
-                {chParas.map((para) => (
-                  <ParagraphBlock
-                    key={para.id}
-                    para={para}
-                    langMode={langMode}
-                    translationMap={translationMap}
-                    translationStatus={translationStatus}
-                    prefs={prefs}
-                    bgConfig={bgConfig}
-                    highlights={highlights}
-                    renderParaText={renderParaText}
-                    apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
-                  />
-                ))}
-              </div>
+              </>
             );
-          })}
 
-          {/* 无章节划分的段落 */}
-          {allParas.filter(p => !p.chapter_id).map((para) => (
-            <ParagraphBlock
-              key={para.id}
-              para={para}
-              langMode={langMode}
-              translationMap={translationMap}
-              translationStatus={translationStatus}
-              prefs={prefs}
-              bgConfig={bgConfig}
-              highlights={highlights}
-              renderParaText={renderParaText}
-            />
-          ))}
+            const getPageChapters = (paras) => {
+              const ids = [...new Set(paras.map(p => p.chapter_id).filter(Boolean))];
+              return ids.map(cid => chapters.find(c => c.id === cid)).filter(Boolean)
+                .filter(ch => {
+                  const firstPara = paragraphs.find(p => p.chapter_id === ch.id);
+                  return paras.includes(firstPara);
+                });
+            };
 
-          {/* 末尾完成标记 */}
-          <div style={{ textAlign: 'center', marginTop: 60, padding: '24px 0', opacity: 0.5, breakInside: 'avoid-column' }}>
-            <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
-            <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
-          </div>
+            // 每页固定视口高度，禁止页内下滚，内容超出由翻页解决
+            const pageStyle = {
+              height: '100%',
+              overflow: 'hidden',   // 禁止页内滚动
+              boxSizing: 'border-box',
+              padding: '56px 52px 72px',
+              fontFamily: prefs.fontFamily,
+              fontSize: prefs.fontSize,
+              lineHeight: prefs.lineHeight,
+              color: bgConfig.text,
+              position: 'relative',
+              zIndex: 1,            // 内容层在背景图之上
+            };
+
+            if (isDualPage) {
+              const pairs = [];
+              for (let i = 0; i < pageGroups.length; i += 2) {
+                pairs.push([pageGroups[i], pageGroups[i + 1] || null]);
+              }
+              return pairs.map(([left, right], pairIdx) => (
+                <div
+                  key={`pair-${pairIdx}`}
+                  ref={pairIdx === 0 ? contentContainerRef : null}
+                  style={{
+                    minWidth: '100%', maxWidth: '100%', height: '100%',
+                    flexShrink: 0, scrollSnapAlign: 'start',
+                    display: 'flex', boxSizing: 'border-box',
+                  }}
+                >
+                  <div style={{
+                    ...pageStyle, flex: 1,
+                    borderRight: `1px solid ${isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'}`,
+                  }}>
+                    {renderOnePageContent(left.paras, getPageChapters(left.paras), pairIdx * 2)}
+                  </div>
+                  <div style={{ ...pageStyle, flex: 1 }}>
+                    {right && renderOnePageContent(right.paras, getPageChapters(right.paras), pairIdx * 2 + 1)}
+                  </div>
+                </div>
+              ));
+            }
+
+            // 单栏
+            return pageGroups.map(({ page, paras }, idx) => (
+              <div
+                key={page}
+                ref={idx === 0 ? contentContainerRef : null}
+                style={{ ...pageStyle, minWidth: '100%', maxWidth: '100%', scrollSnapAlign: 'start', flexShrink: 0 }}
+              >
+                {renderOnePageContent(paras, getPageChapters(paras), idx)}
+              </div>
+            ));
+          })()}
         </div>
 
-        {/* 底部进度提示 (覆盖在最上方，透明背景，不随内容移动) */}
+        {/* 底部进度提示 */}
         <div style={{
-          position: 'absolute', bottom: 16, left: 0, right: 0,
+          position: 'absolute', bottom: controlsVisible ? 64 : 16, left: 0, right: 0,
           textAlign: 'center', pointerEvents: 'none',
-          color: bgConfig.text, opacity: 0.5, fontSize: 12,
+          color: bgConfig.text, opacity: 0.4, fontSize: 12,
+          transition: 'bottom 0.3s',
         }}>
-           {currentPageIndex + 1} / {totalPagesComputed}
+          {currentPageIndex + 1} / {totalPagesComputed}
         </div>
 
-        {/* 底部翻页栏（控制栏，浮层）*/}
+        {/* 底部翻页栏 */}
         <div style={{
           position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 100,
-          background: bgConfig.key === 'dark' ? 'rgba(26,26,46,0.96)' : 'rgba(255,255,255,0.96)',
+          background: bgConfig.type === 'image' ? 'rgba(0,0,0,0.5)' : bgConfig.key === 'dark' ? 'rgba(26,26,46,0.96)' : 'rgba(255,255,255,0.96)',
           backdropFilter: 'blur(8px)',
-          borderTop: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#eee'}`,
+          borderTop: `1px solid ${bgConfig.type === 'image' || bgConfig.key === 'dark' ? 'rgba(255,255,255,0.1)' : '#eee'}`,
           padding: '12px 24px',
           display: 'flex', alignItems: 'center', gap: 12,
           transform: controlsVisible ? 'translateY(0)' : 'translateY(100%)',
           transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-          boxShadow: controlsVisible ? '0 -2px 10px rgba(0,0,0,0.05)' : 'none',
         }}>
           <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-start' }}>
             <Tooltip title="目录">
-              <Button type="text" icon={<MenuOutlined style={{fontSize: 20}}/>} onClick={() => setTocOpen(!tocOpen)} style={{ color: bgConfig.text }} />
+              <Button type="text" icon={<MenuOutlined style={{ fontSize: 20 }} />} onClick={() => setTocOpen(!tocOpen)} style={{ color: bgConfig.text }} />
             </Tooltip>
           </div>
 
           <div style={{ flex: 2, display: 'flex', alignItems: 'center', gap: 12, maxWidth: 600 }}>
-             <Button
-                type="text" icon={<LeftOutlined />}
-                disabled={currentPageIndex <= 0}
-                onClick={() => turnPage('prev')}
-                style={{ color: bgConfig.text }}
-              />
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <input
-                type="range" min={1} max={totalPagesComputed} value={currentPageIndex + 1}
-                onChange={(e) => setCurrentPageIndex(Number(e.target.value) - 1)}
-                style={{ flex: 1, accentColor: '#1890ff', cursor: 'pointer' }}
-              />
+            <Button type="text" icon={<LeftOutlined />}
+              disabled={currentPageIndex <= 0}
+              onClick={() => turnPage('prev')}
+              style={{ color: bgConfig.text }} />
+            <div style={{ flex: 1 }}>
+              <input type="range" min={1} max={totalPagesComputed} value={currentPageIndex + 1}
+                onChange={(e) => {
+                  const newIdx = Number(e.target.value) - 1;
+                  setCurrentPageIndex(newIdx);
+                  if (readingAreaRef.current) {
+                    const pageWidth = readingAreaRef.current.clientWidth;
+                    readingAreaRef.current.scrollTo({ left: newIdx * pageWidth, behavior: 'smooth' });
+                  }
+                }}
+                style={{ width: '100%', accentColor: '#1890ff', cursor: 'pointer' }} />
             </div>
-            <Text type="secondary" style={{ fontSize: 12, flexShrink: 0, color: bgConfig.text, opacity: 0.7 }}>
-               进度 {Math.round(((currentPageIndex + 1) / totalPagesComputed) * 100)}%
+            <Text style={{ fontSize: 12, flexShrink: 0, color: bgConfig.text, opacity: 0.7 }}>
+              {currentPageIndex + 1} / {totalPagesComputed} 页
             </Text>
-             <Button
-                type="text" icon={<RightOutlined />}
-                disabled={currentPageIndex >= totalPagesComputed - 1}
-                onClick={() => turnPage('next')}
-                style={{ color: bgConfig.text }}
-              />
+            <Button type="text" icon={<RightOutlined />}
+              disabled={currentPageIndex >= totalPagesComputed - 1}
+              onClick={() => turnPage('next')}
+              style={{ color: bgConfig.text }} />
           </div>
 
           <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-             <Tooltip title="阅读设置">
-              <Button type="text" icon={<SettingOutlined style={{fontSize: 20}}/>} onClick={() => setSettingsOpen(!settingsOpen)} style={{ color: bgConfig.text }} />
+            <Tooltip title="阅读设置">
+              <Button type="text" icon={<SettingOutlined style={{ fontSize: 20 }} />}
+                onClick={() => setSettingsOpen(!settingsOpen)} style={{ color: bgConfig.text }} />
             </Tooltip>
           </div>
         </div>
@@ -1051,7 +1320,7 @@ export default function DocumentReaderPage() {
     return (
       <div style={{
         height: 44, display: 'flex', alignItems: 'center', padding: '0 16px',
-        borderTop: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
+        borderTop: `1px solid ${isDarkMode ? '#333' : '#f0f0f0'}`,
         background: bgConfig.value, flexShrink: 0, gap: 12,
       }}>
         <Button size="small" icon={<LeftOutlined />} disabled={pdfPage <= 1}
@@ -1075,7 +1344,7 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   const renderAiPanel = () => (
     <div style={{
-      width: 320, borderLeft: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
+      width: 320, borderLeft: `1px solid ${isDarkMode ? '#333' : '#f0f0f0'}`,
       display: 'flex', flexDirection: 'column', background: '#fff', flexShrink: 0,
     }}>
       <div style={{ padding: '12px 14px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -1139,7 +1408,7 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   const renderNotesPanel = () => (
     <div style={{
-      width: 320, borderLeft: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
+      width: 320, borderLeft: `1px solid ${isDarkMode ? '#333' : '#f0f0f0'}`,
       display: 'flex', flexDirection: 'column', background: '#fff', flexShrink: 0,
     }}>
       <div style={{ padding: '12px 14px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -1350,9 +1619,11 @@ function ParagraphBlock({ para, langMode, translationMap, translationStatus, pre
 
   const baseStyle = {
     margin: 0,
-    marginBottom: prefs.lineHeight * 8,
+    marginBottom: `${prefs.lineHeight * 0.8}em`,
     lineHeight: prefs.lineHeight,
     color: bgConfig.text,
+    fontSize: prefs.fontSize,
+    fontFamily: prefs.fontFamily,
   };
 
   if (para.type === 'heading2') {
@@ -1410,7 +1681,7 @@ function ParagraphBlock({ para, langMode, translationMap, translationStatus, pre
         ) : (
           <p style={{
             ...baseStyle, marginBottom: 0, textIndent: '2em',
-            color: bgConfig.key === 'dark' ? '#aaa' : '#555',
+            color: (bgConfig.key === 'dark' || bgConfig.type === 'image') ? '#aaa' : '#555',
             fontSize: prefs.fontSize - 1,
             fontStyle: langMode === 'bilingual' ? 'normal' : 'normal',
             borderLeft: langMode === 'bilingual' ? '2px solid #1890ff20' : 'none',
