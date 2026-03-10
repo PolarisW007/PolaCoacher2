@@ -150,13 +150,6 @@ export default function DocumentReaderPage() {
   const [pdfTotal, setPdfTotal] = useState(0);
   const pdfGoToRef = useRef(null);
 
-  // ── 分页阅读：当前 PDF 页（文本模式按原始页分页）────────
-  const [readPage, setReadPage] = useState(1);   // 1-based 原始 PDF 页
-  // 计算总页数（paragraphs 中 page 字段的最大值）
-  const totalReadPages = paragraphs.length > 0
-    ? Math.max(...paragraphs.map((p) => p.page || 1), 1)
-    : 1;
-
   // ── 阅读区 ref ────────────────────────────────────────────
   const readingAreaRef = useRef(null);
   const chapterRefs = useRef({});   // {chapterId: DOM}
@@ -306,7 +299,7 @@ export default function DocumentReaderPage() {
   }, [id]);
 
   // ─────────────────────────────────────────────────────────
-  // 键盘翻页（PDF 模式）
+  // 键盘翻页（PDF 模式和文字模式通用）
   // ─────────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e) => {
@@ -315,13 +308,13 @@ export default function DocumentReaderPage() {
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') pdfGoToRef.current?.(pdfPage + 1);
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') pdfGoToRef.current?.(pdfPage - 1);
       } else if (mainView === 'text') {
-        if (e.key === 'ArrowRight') setReadPage((p) => Math.min(totalReadPages, p + 1));
-        if (e.key === 'ArrowLeft') setReadPage((p) => Math.max(1, p - 1));
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') turnPage('next');
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') turnPage('prev');
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [mainView, pdfPage, totalReadPages]);
+  }, [mainView, pdfPage, turnPage]);
 
   // ─────────────────────────────────────────────────────────
   // 文字选中监听 → 显示浮层工具栏
@@ -494,6 +487,32 @@ export default function DocumentReaderPage() {
     return map;
   })();
 
+  // ── 浏览器全屏模式 ─────────────────────────────────────────
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {
+        message.error('当前浏览器不支持全屏');
+      });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // ── 沉浸式阅读态 (控制栏显隐) ─────────────────────────────
+  const [controlsVisible, setControlsVisible] = useState(true);
+
   // ─────────────────────────────────────────────────────────
   // 渲染：顶栏
   // ─────────────────────────────────────────────────────────
@@ -501,19 +520,14 @@ export default function DocumentReaderPage() {
     <div style={{
       height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '0 14px', background: bgConfig.value, borderBottom: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#e8e8e8'}`,
-      flexShrink: 0, gap: 10, zIndex: 50,
-      transition: 'background 0.3s',
+      flexShrink: 0, gap: 10, zIndex: 100,
+      position: 'absolute', top: 0, left: 0, right: 0,
+      transform: controlsVisible ? 'translateY(0)' : 'translateY(-100%)',
+      transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s',
+      boxShadow: controlsVisible ? '0 2px 8px rgba(0,0,0,0.05)' : 'none',
     }}>
       {/* 左 */}
       <Space size={6} style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-        <Tooltip title="目录">
-          <Button
-            type={tocOpen ? 'primary' : 'text'}
-            icon={<MenuOutlined />} size="small"
-            onClick={() => setTocOpen((v) => !v)}
-            style={{ color: tocOpen ? undefined : bgConfig.text, flexShrink: 0 }}
-          />
-        </Tooltip>
         <Button
           type="text" icon={<ArrowLeftOutlined />} size="small"
           onClick={() => navigate('/documents')}
@@ -535,29 +549,19 @@ export default function DocumentReaderPage() {
         )}
       </Space>
 
-      {/* 中：视图切换 */}
-      <Space size={4} style={{ flexShrink: 0 }}>
-        <Button
-          size="small" type={mainView === 'text' ? 'primary' : 'default'}
-          icon={<ReadOutlined />}
-          disabled={!contentReady}
-          onClick={() => setMainView('text')}
-          style={{ borderRadius: 6 }}
-        >
-          {contentReady ? '流式阅读' : '解析中…'}
-        </Button>
-        <Button
-          size="small" type={mainView === 'pdf' ? 'primary' : 'default'}
-          icon={<FilePdfOutlined />}
-          onClick={() => setMainView('pdf')}
-          style={{ borderRadius: 6 }}
-        >
-          PDF原文
-        </Button>
-      </Space>
-
       {/* 右：工具区 */}
       <Space size={4} style={{ flexShrink: 0 }}>
+        {/* 全屏按钮 */}
+        <Tooltip title={isFullscreen ? "退出全屏" : "全屏阅读"}>
+          <Button
+            type="text" size="small"
+            icon={<span style={{ fontSize: 16 }}>{isFullscreen ? '⛶' : '⛶'}</span>} // Placeholder for a better icon if needed, using unicode or just text is fine for now, let's use text for safety if no icon
+            onClick={toggleFullscreen}
+            style={{ color: bgConfig.text }}
+          >
+            {isFullscreen ? '退出全屏' : '全屏'}
+          </Button>
+        </Tooltip>
         {/* 语言/翻译 */}
         {mainView === 'text' && (
           <TranslationToggle
@@ -579,17 +583,12 @@ export default function DocumentReaderPage() {
         <Tooltip title={rightPanel === 'ai' ? '关闭问书' : 'AI 问书'}>
           <Button type={rightPanel === 'ai' ? 'primary' : 'text'} icon={<MessageOutlined />} size="small"
             style={{ color: rightPanel === 'ai' ? undefined : bgConfig.text }}
-            onClick={() => setRightPanel((v) => v === 'ai' ? null : 'ai')} />
+            onClick={() => { setRightPanel((v) => v === 'ai' ? null : 'ai'); setControlsVisible(true); }} />
         </Tooltip>
         <Tooltip title={rightPanel === 'notes' ? '关闭笔记' : '笔记'}>
           <Button type={rightPanel === 'notes' ? 'primary' : 'text'} icon={<EditOutlined />} size="small"
             style={{ color: rightPanel === 'notes' ? undefined : bgConfig.text }}
-            onClick={() => setRightPanel((v) => v === 'notes' ? null : 'notes')} />
-        </Tooltip>
-        <Tooltip title="阅读设置">
-          <Button type={settingsOpen ? 'primary' : 'text'} icon={<SettingOutlined />} size="small"
-            style={{ color: settingsOpen ? undefined : bgConfig.text }}
-            onClick={() => setSettingsOpen((v) => !v)} />
+            onClick={() => { setRightPanel((v) => v === 'notes' ? null : 'notes'); setControlsVisible(true); }} />
         </Tooltip>
       </Space>
     </div>
@@ -607,19 +606,27 @@ export default function DocumentReaderPage() {
     };
     return (
       <div style={{
-        position: 'absolute', top: 54, right: 14, zIndex: 200,
-        background: '#fff', borderRadius: 14, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
-        padding: '18px 20px', width: 300,
+        background: bgConfig.key === 'dark' ? '#222' : '#fff', 
+        borderRadius: 16, 
+        boxShadow: '0 -8px 30px rgba(0,0,0,0.12)',
+        padding: '24px', 
+        width: 380,
+        color: bgConfig.text,
       }}>
         {/* 字号 */}
-        <div style={{ marginBottom: 14 }}>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>字号</Text>
-          <Space>
+        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>字号</Text>
+          <Space style={{ flex: 1, justifyContent: 'space-between' }}>
             {FONT_SIZE_OPTIONS.map((opt) => (
               <Button
-                key={opt.value} size="small"
+                key={opt.value} size="middle"
                 type={prefs.fontSize === opt.value ? 'primary' : 'default'}
-                style={{ borderRadius: 8, fontSize: opt.value === 22 ? 13 : 12 }}
+                style={{ 
+                  borderRadius: 20, fontSize: opt.value === 22 ? 14 : 13,
+                  background: prefs.fontSize === opt.value ? undefined : 'transparent',
+                  borderColor: prefs.fontSize === opt.value ? undefined : '#d9d9d9',
+                  color: prefs.fontSize === opt.value ? undefined : bgConfig.text,
+                }}
                 onClick={() => update('fontSize', opt.value)}
               >
                 {opt.label}
@@ -628,14 +635,19 @@ export default function DocumentReaderPage() {
           </Space>
         </div>
         {/* 字体 */}
-        <div style={{ marginBottom: 14 }}>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>字体</Text>
-          <Space wrap>
+        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>字体</Text>
+          <Space style={{ flex: 1, justifyContent: 'space-between' }}>
             {FONT_FAMILY_OPTIONS.map((opt) => (
               <Button
-                key={opt.label} size="small"
+                key={opt.label} size="middle"
                 type={prefs.fontFamily === opt.value ? 'primary' : 'default'}
-                style={{ borderRadius: 8, fontFamily: opt.value }}
+                style={{ 
+                  borderRadius: 20, fontFamily: opt.value,
+                  background: prefs.fontFamily === opt.value ? undefined : 'transparent',
+                  borderColor: prefs.fontFamily === opt.value ? undefined : '#d9d9d9',
+                  color: prefs.fontFamily === opt.value ? undefined : bgConfig.text,
+                }}
                 onClick={() => update('fontFamily', opt.value)}
               >
                 {opt.label}
@@ -644,14 +656,19 @@ export default function DocumentReaderPage() {
           </Space>
         </div>
         {/* 行距 */}
-        <div style={{ marginBottom: 14 }}>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>行距</Text>
-          <Space>
+        <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>行距</Text>
+          <Space style={{ flex: 1, justifyContent: 'flex-start', gap: 20 }}>
             {LINE_HEIGHT_OPTIONS.map((opt) => (
               <Button
-                key={opt.value} size="small"
+                key={opt.value} size="middle"
                 type={prefs.lineHeight === opt.value ? 'primary' : 'default'}
-                style={{ borderRadius: 8 }}
+                style={{ 
+                  borderRadius: 20,
+                  background: prefs.lineHeight === opt.value ? undefined : 'transparent',
+                  borderColor: prefs.lineHeight === opt.value ? undefined : '#d9d9d9',
+                  color: prefs.lineHeight === opt.value ? undefined : bgConfig.text,
+                }}
                 onClick={() => update('lineHeight', opt.value)}
               >
                 {opt.label}
@@ -660,18 +677,19 @@ export default function DocumentReaderPage() {
           </Space>
         </div>
         {/* 背景 */}
-        <div>
-          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>背景</Text>
-          <Space>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <Text type="secondary" style={{ fontSize: 13, width: 60, color: bgConfig.text, opacity: 0.8 }}>背景</Text>
+          <Space style={{ flex: 1, justifyContent: 'flex-start', gap: 20 }}>
             {BG_OPTIONS.map((opt) => (
               <button
                 key={opt.key}
                 onClick={() => update('bg', opt.key)}
                 title={opt.label}
                 style={{
-                  width: 32, height: 32, borderRadius: '50%', background: opt.value,
-                  border: prefs.bg === opt.key ? '2px solid #1890ff' : '2px solid #ddd',
-                  cursor: 'pointer', padding: 0,
+                  width: 36, height: 36, borderRadius: '50%', background: opt.value,
+                  border: prefs.bg === opt.key ? '2px solid #1890ff' : '2px solid #e0e0e0',
+                  boxShadow: prefs.bg === opt.key ? '0 0 0 2px rgba(24,144,255,0.2)' : 'none',
+                  cursor: 'pointer', padding: 0, transition: 'all 0.2s',
                 }}
               />
             ))}
@@ -714,13 +732,17 @@ export default function DocumentReaderPage() {
               <div
                 key={ch.id}
                 onClick={() => {
-                  // 跳到该章节所在页
-                  const firstPara = paragraphs.find((p) => p.chapter_id === ch.id);
-                  if (firstPara && firstPara.page) {
-                    setReadPage(firstPara.page);
-                  } else {
-                    const el = chapterRefs.current[ch.id];
-                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  // 在基于 column 的布局中，跳到对应章节意味着：
+                  // 1. 计算目标元素相对于 contentContainer 的左侧偏移
+                  // 2. 根据容器宽度将偏移转化为页码
+                  const el = chapterRefs.current[ch.id];
+                  if (el && contentContainerRef.current && readingAreaRef.current) {
+                    const offsetLeft = el.offsetLeft;
+                    const containerWidth = readingAreaRef.current.clientWidth;
+                    const columnGap = 60;
+                    const effectivePageWidth = containerWidth + columnGap;
+                    const targetPage = Math.floor(offsetLeft / effectivePageWidth);
+                    setCurrentPageIndex(Math.max(0, targetPage));
                   }
                 }}
                 style={{
@@ -788,12 +810,8 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   // 渲染：主文本阅读区
   // ─────────────────────────────────────────────────────────
-  // ── 分页切换时滚到顶 ─────────────────────────────────────
-  useEffect(() => {
-    if (readingAreaRef.current) readingAreaRef.current.scrollTop = 0;
-  }, [readPage]);
-
-  const renderTextView = () => {
+  
+    const renderTextView = () => {
     if (contentLoading) {
       return (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, background: bgConfig.value }}>
@@ -825,52 +843,85 @@ export default function DocumentReaderPage() {
       );
     }
 
-    // 当前页的段落（按 PDF 原始页过滤；page=0 的（docx/txt）全部显示）
-    const allHavePage = paragraphs.some((p) => (p.page || 0) > 0);
-    const currentParas = allHavePage
-      ? paragraphs.filter((p) => (p.page || 1) === readPage)
-      : paragraphs;  // 无分页信息时显示全部
+    // 在 CSS Column 模式下，我们将所有段落连在一起渲染
+    const allParas = paragraphs;
 
-    // 找本页涉及的章节（用于显示章节标题）
-    const pageChapterIds = [...new Set(currentParas.map((p) => p.chapter_id).filter(Boolean))];
-    const pageChapters = pageChapterIds
-      .map((cid) => chapters.find((c) => c.id === cid))
-      .filter(Boolean);
-
+    const columnGap = 60;
+    // contentStyle 控制的是整个可以无限向右延伸的内容容器
     const contentStyle = {
       fontFamily: prefs.fontFamily,
       fontSize: prefs.fontSize,
       lineHeight: prefs.lineHeight,
       color: bgConfig.text,
-      background: bgConfig.value,
-      maxWidth: 740,
-      margin: '0 auto',
-      padding: '32px 28px 40px',
-      transition: 'all 0.3s',
-      minHeight: '60vh',
+      // 核心 CSS Multi-column 属性
+      columnCount: columns,
+      columnGap: `${columnGap}px`,
+      // 视口高度减去顶底边距，确保内容不会垂直溢出，而是流向下一列
+      height: 'calc(100vh - 120px)',
+      // 为了支持内部元素的 margin 不引起撑破，设置 padding
+      padding: '60px 40px',
+      boxSizing: 'border-box',
+      // 横向平滑移动实现翻页
+      transform: `translateX(calc(-${currentPageIndex * 100}% - ${currentPageIndex * columnGap}px))`,
+      transition: 'transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+      willChange: 'transform',
     };
 
     return (
       <div
         ref={readingAreaRef}
-        style={{ flex: 1, overflowY: 'auto', background: bgConfig.value, transition: 'background 0.3s' }}
+        onClick={(e) => {
+          // 点击页面空白处，切换控制栏显示/隐藏
+          if (window.getSelection().toString().length > 0) return;
+          if (e.target.closest('button') || e.target.closest('input')) return;
+          
+          // 如果点击区域在最左侧 20% 或最右侧 20%，则视为翻页操作
+          const rect = readingAreaRef.current.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          if (x < rect.width * 0.2) {
+             turnPage('prev');
+             return;
+          }
+          if (x > rect.width * 0.8) {
+             turnPage('next');
+             return;
+          }
+
+          setControlsVisible(!controlsVisible);
+        }}
+        style={{ 
+          flex: 1, 
+          // 禁止滚动，由 transform 控制
+          overflow: 'hidden', 
+          background: bgConfig.value, 
+          transition: 'background 0.3s', 
+          position: 'relative' 
+        }}
       >
-        <div style={contentStyle}>
-          {/* 显示本页出现的新章节标题 */}
-          {pageChapters.map((ch) => {
-            // 只在该章节第一段位于本页时显示标题
-            const firstParaOfChapter = paragraphs.find((p) => p.chapter_id === ch.id);
-            if (firstParaOfChapter && (firstParaOfChapter.page || 1) !== readPage) return null;
+        <div ref={contentContainerRef} style={contentStyle}>
+          {chapters.map((ch) => {
+            const chParas = allParas.filter(p => p.chapter_id === ch.id);
+            if (chParas.length === 0) return null;
+            
             const translatedTitle = translatedChapterTitles[ch.id];
             const chapterTitle = langMode === 'translated' && translatedTitle ? translatedTitle : ch.title;
+            
             return (
-              <div key={ch.id} ref={(el) => { chapterRefs.current[ch.id] = el; }} data-chapter-id={ch.id}>
+              <div 
+                key={ch.id} 
+                ref={(el) => { chapterRefs.current[ch.id] = el; }} 
+                data-chapter-id={ch.id}
+                // 确保章节标题不被强制截断
+                style={{ breakInside: 'avoid-column' }}
+              >
+                {/* 章节标题 */}
                 {ch.level === 1 ? (
                   <h2 style={{
                     fontSize: prefs.fontSize + 6, fontWeight: 700, color: bgConfig.text,
-                    marginBottom: 20, marginTop: 8, lineHeight: 1.4,
+                    marginBottom: 20, marginTop: 40, lineHeight: 1.4,
                     borderBottom: `2px solid ${bgConfig.key === 'dark' ? '#333' : '#f0f0f0'}`,
                     paddingBottom: 12,
+                    columnSpan: 'all', // 如果支持，标题可以跨列，但这在基于 column 的分页中可能引起不可控的排版，一般不设
                   }}>
                     {chapterTitle}
                     {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
@@ -888,16 +939,28 @@ export default function DocumentReaderPage() {
                     )}
                   </h3>
                 )}
+
+                {/* 章节段落 */}
+                {chParas.map((para) => (
+                  <ParagraphBlock
+                    key={para.id}
+                    para={para}
+                    langMode={langMode}
+                    translationMap={translationMap}
+                    translationStatus={translationStatus}
+                    prefs={prefs}
+                    bgConfig={bgConfig}
+                    highlights={highlights}
+                    renderParaText={renderParaText}
+                    apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
+                  />
+                ))}
               </div>
             );
           })}
 
-          {/* 本页段落 */}
-          {currentParas.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '60px 0', opacity: 0.4 }}>
-              <Text style={{ color: bgConfig.text, fontSize: 14 }}>本页暂无文字内容</Text>
-            </div>
-          ) : currentParas.map((para) => (
+          {/* 无章节划分的段落 */}
+          {allParas.filter(p => !p.chapter_id).map((para) => (
             <ParagraphBlock
               key={para.id}
               para={para}
@@ -908,57 +971,74 @@ export default function DocumentReaderPage() {
               bgConfig={bgConfig}
               highlights={highlights}
               renderParaText={renderParaText}
-              apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
             />
           ))}
 
-          {/* 最后一页完成标记 */}
-          {readPage >= totalReadPages && (
-            <div style={{ textAlign: 'center', marginTop: 48, padding: '24px 0', opacity: 0.5 }}>
-              <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
-              <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
-            </div>
-          )}
+          {/* 末尾完成标记 */}
+          <div style={{ textAlign: 'center', marginTop: 60, padding: '24px 0', opacity: 0.5, breakInside: 'avoid-column' }}>
+            <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
+            <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
+          </div>
         </div>
 
-        {/* 底部翻页栏（文字模式）*/}
-        {allHavePage && (
-          <div style={{
-            position: 'sticky', bottom: 0,
-            background: bgConfig.key === 'dark' ? 'rgba(26,26,46,0.96)' : 'rgba(255,255,255,0.96)',
-            backdropFilter: 'blur(8px)',
-            borderTop: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#eee'}`,
-            padding: '10px 24px',
-            display: 'flex', alignItems: 'center', gap: 12,
-          }}>
-            <Button
-              size="small" icon={<LeftOutlined />}
-              disabled={readPage <= 1}
-              onClick={() => setReadPage((p) => Math.max(1, p - 1))}
-              style={{ flexShrink: 0, borderRadius: 20, padding: '0 12px', height: 28 }}
-            >
-              上一页
-            </Button>
+        {/* 底部进度提示 (覆盖在最上方，透明背景，不随内容移动) */}
+        <div style={{
+          position: 'absolute', bottom: 16, left: 0, right: 0,
+          textAlign: 'center', pointerEvents: 'none',
+          color: bgConfig.text, opacity: 0.5, fontSize: 12,
+        }}>
+           {currentPageIndex + 1} / {totalPagesComputed}
+        </div>
+
+        {/* 底部翻页栏（控制栏，浮层）*/}
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 100,
+          background: bgConfig.key === 'dark' ? 'rgba(26,26,46,0.96)' : 'rgba(255,255,255,0.96)',
+          backdropFilter: 'blur(8px)',
+          borderTop: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#eee'}`,
+          padding: '12px 24px',
+          display: 'flex', alignItems: 'center', gap: 12,
+          transform: controlsVisible ? 'translateY(0)' : 'translateY(100%)',
+          transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          boxShadow: controlsVisible ? '0 -2px 10px rgba(0,0,0,0.05)' : 'none',
+        }}>
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-start' }}>
+            <Tooltip title="目录">
+              <Button type="text" icon={<MenuOutlined style={{fontSize: 20}}/>} onClick={() => setTocOpen(!tocOpen)} style={{ color: bgConfig.text }} />
+            </Tooltip>
+          </div>
+
+          <div style={{ flex: 2, display: 'flex', alignItems: 'center', gap: 12, maxWidth: 600 }}>
+             <Button
+                type="text" icon={<LeftOutlined />}
+                disabled={currentPageIndex <= 0}
+                onClick={() => turnPage('prev')}
+                style={{ color: bgConfig.text }}
+              />
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
               <input
-                type="range" min={1} max={totalReadPages} value={readPage}
-                onChange={(e) => setReadPage(Number(e.target.value))}
+                type="range" min={1} max={totalPagesComputed} value={currentPageIndex + 1}
+                onChange={(e) => setCurrentPageIndex(Number(e.target.value) - 1)}
                 style={{ flex: 1, accentColor: '#1890ff', cursor: 'pointer' }}
               />
             </div>
             <Text type="secondary" style={{ fontSize: 12, flexShrink: 0, color: bgConfig.text, opacity: 0.7 }}>
-              {readPage} / {totalReadPages} 页
+               进度 {Math.round(((currentPageIndex + 1) / totalPagesComputed) * 100)}%
             </Text>
-            <Button
-              size="small" icon={<RightOutlined />}
-              disabled={readPage >= totalReadPages}
-              onClick={() => setReadPage((p) => Math.min(totalReadPages, p + 1))}
-              style={{ flexShrink: 0, borderRadius: 20, padding: '0 12px', height: 28 }}
-            >
-              下一页
-            </Button>
+             <Button
+                type="text" icon={<RightOutlined />}
+                disabled={currentPageIndex >= totalPagesComputed - 1}
+                onClick={() => turnPage('next')}
+                style={{ color: bgConfig.text }}
+              />
           </div>
-        )}
+
+          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+             <Tooltip title="阅读设置">
+              <Button type="text" icon={<SettingOutlined style={{fontSize: 20}}/>} onClick={() => setSettingsOpen(!settingsOpen)} style={{ color: bgConfig.text }} />
+            </Tooltip>
+          </div>
+        </div>
       </div>
     );
   };
@@ -1219,11 +1299,11 @@ export default function DocumentReaderPage() {
         {rightPanel === 'notes' && renderNotesPanel()}
       </div>
 
-      {/* 阅读设置下拉 */}
+      {/* 阅读设置下拉 (固定在底部控制栏上方) */}
       {settingsOpen && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 150 }}
           onClick={() => setSettingsOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
+          <div onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', bottom: 64, right: 24 }}>
             {renderSettings()}
           </div>
         </div>
