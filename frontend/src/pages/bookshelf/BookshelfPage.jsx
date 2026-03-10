@@ -52,7 +52,6 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { docApi, groupApi, bookshelfApi } from '../../api/documents';
-import { communityApi } from '../../api/community';
 import { useAuth } from '../../store/AuthContext';
 
 const { Title, Text, Paragraph } = Typography;
@@ -383,7 +382,7 @@ function AddCard({ onClick }) {
         <Text type="secondary">添加文档到书架</Text>
         <br />
         <Text type="secondary" style={{ fontSize: 12 }}>
-          支持上传、URL导入、文库搜索、书籍搜索
+          支持上传、URL导入、书籍搜索
         </Text>
       </div>
     </Card>
@@ -470,7 +469,7 @@ function GroupCard({ group, docs, onRefresh, onEdit, onDelete, allGroups, onMove
 }
 
 function AddDocModal({ open, onClose, onUploadDone }) {
-  const [mode, setMode] = useState(null); // null | 'upload' | 'url' | 'library' | 'book'
+  const [mode, setMode] = useState(null); // null | 'upload' | 'url' | 'book'
   const [urlForm] = Form.useForm();
   const [bookQuery, setBookQuery] = useState('');
   const [bookResults, setBookResults] = useState([]);
@@ -637,18 +636,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         hoverable
         style={optionCardStyle}
         styles={{ body: { padding: '24px 16px' } }}
-        onClick={() => setMode('library')}
-      >
-        <SearchOutlined style={{ fontSize: 32, color: '#fa8c16', marginBottom: 8 }} />
-        <br />
-        <Text strong>文库搜索</Text>
-        <br />
-        <Text type="secondary" style={{ fontSize: 12 }}>搜索在线文库</Text>
-      </Card>
-      <Card
-        hoverable
-        style={optionCardStyle}
-        styles={{ body: { padding: '24px 16px' } }}
         onClick={() => setMode('book')}
       >
         <BookOutlined style={{ fontSize: 32, color: '#722ed1', marginBottom: 8 }} />
@@ -702,106 +689,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         </Space>
       </div>
     </Form>
-  );
-
-  const [libraryQuery, setLibraryQuery] = useState('');
-  const [libraryResults, setLibraryResults] = useState([]);
-  const [librarySearching, setLibrarySearching] = useState(false);
-
-  const handleLibrarySearch = async () => {
-    if (!libraryQuery.trim()) return;
-    setLibrarySearching(true);
-    try {
-      const res = await communityApi.listLectures({ search: libraryQuery.trim(), page: 1, page_size: 20 });
-      setLibraryResults(res.data?.items || []);
-    } catch (err) {
-      message.error(err.message);
-    } finally {
-      setLibrarySearching(false);
-    }
-  };
-
-  const handleAddToShelf = async (doc) => {
-    try {
-      await bookshelfApi.add(doc.id);
-      message.success(`已添加「${doc.title}」到书架`);
-    } catch (err) {
-      message.error(err.message);
-    }
-  };
-
-  const renderLibrarySearch = () => (
-    <div style={{ marginTop: 8 }}>
-      <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-        搜索社区中已公开的文档资源，一键添加到个人书架
-      </Text>
-      <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
-        <Input
-          placeholder="搜索文库中的文档..."
-          value={libraryQuery}
-          onChange={(e) => setLibraryQuery(e.target.value)}
-          onPressEnter={handleLibrarySearch}
-          prefix={<SearchOutlined />}
-        />
-        <Button type="primary" onClick={handleLibrarySearch} loading={librarySearching}>
-          搜索
-        </Button>
-      </Space.Compact>
-
-      <Spin spinning={librarySearching}>
-        {libraryResults.length > 0 ? (
-          <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-            {libraryResults.map((doc) => (
-              <Card
-                key={doc.id}
-                size="small"
-                style={{ marginBottom: 8, borderRadius: 8 }}
-                styles={{ body: { padding: 12 } }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ flex: 1, marginRight: 12 }}>
-                    <Text strong>{doc.title}</Text>
-                    {doc.owner?.username && (
-                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                        by {doc.owner.username}
-                      </Text>
-                    )}
-                    {doc.summary && (
-                      <Paragraph
-                        ellipsis={{ rows: 1 }}
-                        type="secondary"
-                        style={{ fontSize: 12, marginBottom: 0, marginTop: 4 }}
-                      >
-                        {doc.summary}
-                      </Paragraph>
-                    )}
-                  </div>
-                  <Button
-                    type="primary"
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={() => handleAddToShelf(doc)}
-                  >
-                    添加
-                  </Button>
-                </div>
-              </Card>
-            ))}
-          </div>
-        ) : (
-          !librarySearching && (
-            <Empty
-              description={libraryQuery ? '未找到相关文档' : '输入关键词搜索文库'}
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-            />
-          )
-        )}
-      </Spin>
-
-      <div style={{ textAlign: 'right', marginTop: 16 }}>
-        <Button onClick={() => setMode(null)}>返回</Button>
-      </div>
-    </div>
   );
 
   const renderBookSearch = () => (
@@ -952,7 +839,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     null: '添加文档',
     upload: '本地上传',
     url: 'URL 导入',
-    library: '文库搜索',
     book: '书籍搜索',
   };
 
@@ -968,7 +854,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
       {mode === null && renderModeSelection()}
       {mode === 'upload' && renderUpload()}
       {mode === 'url' && renderUrlImport()}
-      {mode === 'library' && renderLibrarySearch()}
       {mode === 'book' && renderBookSearch()}
     </Modal>
   );
