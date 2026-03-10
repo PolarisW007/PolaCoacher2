@@ -1,16 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Typography,
   Card,
   Table,
-  Tag,
   Button,
   Input,
   Select,
   Space,
   Modal,
   message,
+  Typography,
 } from 'antd';
 import {
   SearchOutlined,
@@ -19,18 +18,26 @@ import {
   DeleteOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import { docApi } from '../api/documents';
 import dayjs from 'dayjs';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const statusMap = {
-  uploading: { text: '上传中', color: 'processing' },
-  processing: { text: '处理中', color: 'processing' },
-  ready: { text: '就绪', color: 'success' },
-  error: { text: '错误', color: 'error' },
-  pending: { text: '待处理', color: 'default' },
+  uploading: { text: '上传中', bg: 'rgba(17,205,239,0.1)', color: '#11cdef' },
+  processing: { text: '处理中', bg: 'rgba(17,205,239,0.1)', color: '#11cdef' },
+  ready: { text: '就绪', bg: 'rgba(45,206,137,0.1)', color: '#2dce89' },
+  error: { text: '错误', bg: 'rgba(245,54,92,0.1)', color: '#f5365c' },
+  pending: { text: '待处理', bg: 'rgba(90,106,126,0.1)', color: '#5a6a7e' },
+};
+
+const typeColorMap = {
+  pdf: { bg: 'rgba(91,79,212,0.1)', color: '#5b4fd4' },
+  docx: { bg: 'rgba(14,165,233,0.1)', color: '#0ea5e9' },
+  txt: { bg: 'rgba(45,206,137,0.1)', color: '#2dce89' },
+  md: { bg: 'rgba(244,63,94,0.1)', color: '#f43f5e' },
 };
 
 const formatFileSize = (bytes) => {
@@ -54,12 +61,7 @@ export default function DocumentLibraryPage() {
   const fetchDocs = useCallback(async () => {
     setLoading(true);
     try {
-      const params = {
-        page,
-        page_size: pageSize,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      };
+      const params = { page, page_size: pageSize, sort_by: sortBy, sort_order: sortOrder };
       if (search.trim()) params.search = search.trim();
       const res = await docApi.list(params);
       setDocs(res.data.items || []);
@@ -71,14 +73,9 @@ export default function DocumentLibraryPage() {
     }
   }, [page, search, sortBy, sortOrder]);
 
-  useEffect(() => {
-    fetchDocs();
-  }, [fetchDocs]);
+  useEffect(() => { fetchDocs(); }, [fetchDocs]);
 
-  const handleSearch = (value) => {
-    setSearch(value);
-    setPage(1);
-  };
+  const handleSearch = (value) => { setSearch(value); setPage(1); };
 
   const handleDelete = (doc) => {
     Modal.confirm({
@@ -105,71 +102,99 @@ export default function DocumentLibraryPage() {
       dataIndex: 'title',
       key: 'title',
       ellipsis: true,
-      render: (text) => <Text strong>{text || '未命名'}</Text>,
+      render: (text, record) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+            background: typeColorMap[record.file_type]?.bg || 'rgba(45,206,137,0.1)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <FileTextOutlined style={{ color: typeColorMap[record.file_type]?.color || '#2dce89', fontSize: 15 }} />
+          </div>
+          <Text strong style={{ color: '#1a2332' }}>{text || '未命名'}</Text>
+        </div>
+      ),
     },
     {
       title: '类型',
       dataIndex: 'file_type',
       key: 'file_type',
-      width: 90,
-      render: (type) => (
-        <Tag style={{ textTransform: 'uppercase' }}>{type || '-'}</Tag>
-      ),
+      width: 80,
+      render: (type) => {
+        const cfg = typeColorMap[type] || typeColorMap.txt;
+        return (
+          <span style={{
+            padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+            textTransform: 'uppercase', letterSpacing: '0.5px',
+            background: cfg.bg, color: cfg.color,
+          }}>
+            {type || '-'}
+          </span>
+        );
+      },
     },
     {
       title: '大小',
       dataIndex: 'file_size',
       key: 'file_size',
       width: 100,
-      render: formatFileSize,
+      render: (v) => <Text style={{ color: '#8896a8', fontSize: 13 }}>{formatFileSize(v)}</Text>,
     },
     {
       title: '页数',
       dataIndex: 'page_count',
       key: 'page_count',
-      width: 80,
-      render: (v) => v ?? '-',
+      width: 70,
+      render: (v) => <Text style={{ color: '#8896a8', fontSize: 13 }}>{v ?? '-'}</Text>,
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
+      width: 90,
       render: (status) => {
-        const cfg = statusMap[status] || { text: status, color: 'default' };
-        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+        const cfg = statusMap[status] || { text: status, bg: 'rgba(90,106,126,0.1)', color: '#5a6a7e' };
+        return (
+          <span style={{
+            padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+            background: cfg.bg, color: cfg.color,
+          }}>
+            {cfg.text}
+          </span>
+        );
       },
     },
     {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 140,
-      render: (t) => (t ? dayjs(t).format('YYYY-MM-DD HH:mm') : '-'),
+      width: 130,
+      render: (t) => <Text style={{ color: '#8896a8', fontSize: 12 }}>{t ? dayjs(t).format('MM-DD HH:mm') : '-'}</Text>,
     },
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 160,
       render: (_, record) => (
-        <Space>
+        <Space size={4}>
           <Button
             type="text"
             size="small"
-            icon={<ReadOutlined />}
+            icon={<ReadOutlined style={{ color: '#5a6a7e' }} />}
             onClick={() => navigate(`/reader/${record.id}`)}
+            style={{ borderRadius: 6 }}
           >
-            阅读
+            <span style={{ color: '#5a6a7e', fontSize: 12 }}>阅读</span>
           </Button>
           <Button
             type="text"
             size="small"
-            icon={<PlayCircleOutlined />}
-            style={{ color: '#2dce89' }}
+            icon={<PlayCircleOutlined style={{ color: record.status === 'ready' ? '#2dce89' : '#ccc' }} />}
             disabled={record.status !== 'ready'}
             onClick={() => navigate(`/study/${record.id}`)}
+            style={{ borderRadius: 6 }}
           >
-            播放
+            <span style={{ fontSize: 12, color: record.status === 'ready' ? '#2dce89' : '#ccc' }}>播放</span>
           </Button>
           <Button
             type="text"
@@ -177,6 +202,7 @@ export default function DocumentLibraryPage() {
             danger
             icon={<DeleteOutlined />}
             onClick={() => handleDelete(record)}
+            style={{ borderRadius: 6 }}
           />
         </Space>
       ),
@@ -186,41 +212,35 @@ export default function DocumentLibraryPage() {
   return (
     <div className="fade-in" style={{ maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: 24 }}>
-        <Title level={2} style={{ margin: 0 }}>
+        <div style={{ fontSize: 26, fontWeight: 800, color: '#1a2332', letterSpacing: '-0.5px', marginBottom: 4 }}>
           文档库
-        </Title>
-        <Text type="secondary" style={{ fontSize: 15 }}>
-          全部文档列表管理
-        </Text>
+        </div>
+        <Text style={{ color: '#8896a8', fontSize: 13 }}>全部文档列表管理</Text>
       </div>
 
-      <Card style={{ borderRadius: 12 }}>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 20,
-            flexWrap: 'wrap',
-            gap: 12,
-          }}
-        >
+      <Card
+        style={{
+          borderRadius: 14,
+          border: '1px solid rgba(226,234,243,0.8)',
+          boxShadow: '0 2px 16px rgba(0,0,0,0.05)',
+        }}
+      >
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 20, flexWrap: 'wrap', gap: 12,
+        }}>
           <Input.Search
             placeholder="搜索文档标题..."
             allowClear
             onSearch={handleSearch}
-            style={{ maxWidth: 360 }}
-            prefix={<SearchOutlined style={{ color: '#b2bec3' }} />}
+            style={{ maxWidth: 320, borderRadius: 10 }}
+            prefix={<SearchOutlined style={{ color: '#aab4be' }} />}
           />
-
           <Space>
             <Select
               value={sortBy}
-              onChange={(v) => {
-                setSortBy(v);
-                setPage(1);
-              }}
-              style={{ width: 130 }}
+              onChange={(v) => { setSortBy(v); setPage(1); }}
+              style={{ width: 120, borderRadius: 10 }}
               options={[
                 { value: 'created_at', label: '创建时间' },
                 { value: 'title', label: '标题' },
@@ -228,22 +248,15 @@ export default function DocumentLibraryPage() {
               ]}
             />
             <Button
-              icon={
-                sortOrder === 'asc' ? (
-                  <SortAscendingOutlined />
-                ) : (
-                  <SortDescendingOutlined />
-                )
-              }
-              onClick={() => {
-                setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
-                setPage(1);
-              }}
+              icon={sortOrder === 'asc' ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+              onClick={() => { setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc')); setPage(1); }}
+              style={{ borderRadius: 10 }}
             />
           </Space>
         </div>
 
         <Table
+          className="sci-table"
           dataSource={docs}
           columns={columns}
           rowKey="id"
@@ -257,6 +270,7 @@ export default function DocumentLibraryPage() {
             showTotal: (t) => `共 ${t} 个文档`,
           }}
           scroll={{ x: 800 }}
+          rowClassName={() => 'sci-table-row'}
         />
       </Card>
     </div>

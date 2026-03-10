@@ -82,10 +82,10 @@ function getProgressLabel(progress) {
 }
 
 const fileTypeConfig = {
-  pdf: { icon: FilePdfOutlined, gradient: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' },
-  docx: { icon: FileWordOutlined, gradient: 'linear-gradient(135deg, #2196F3 0%, #21CBF3 100%)' },
-  txt: { icon: FileTextOutlined, gradient: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)' },
-  md: { icon: FileMarkdownOutlined, gradient: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' },
+  pdf: { icon: FilePdfOutlined, gradient: 'linear-gradient(135deg, #5b4fd4 0%, #8b5cf6 50%, #c084fc 100%)' },
+  docx: { icon: FileWordOutlined, gradient: 'linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%)' },
+  txt: { icon: FileTextOutlined, gradient: 'linear-gradient(135deg, #2dce89 0%, #11cdef 100%)' },
+  md: { icon: FileMarkdownOutlined, gradient: 'linear-gradient(135deg, #f43f5e 0%, #fb923c 100%)' },
 };
 
 function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMoveToGroup }) {
@@ -175,40 +175,47 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
   };
 
   return (
-    <Card
-      className="card-hover"
-      hoverable
+    <div
+      className="neon-card"
       style={{
-        borderRadius: 12,
+        borderRadius: 14,
         overflow: 'hidden',
-        border: selected ? '2px solid #2dce89' : undefined,
+        background: '#fff',
+        cursor: 'pointer',
+        border: selected ? '2px solid #2dce89' : '1px solid rgba(226,234,243,0.8)',
+        position: 'relative',
+        transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
       }}
-      styles={{ body: { padding: 16 } }}
       onClick={handleCardClick}
     >
       {selectable && (
         <Checkbox
           checked={selected}
-          style={{ position: 'absolute', top: 8, left: 8, zIndex: 2 }}
+          style={{ position: 'absolute', top: 10, left: 10, zIndex: 2 }}
           onClick={(e) => e.stopPropagation()}
           onChange={() => onSelect?.(doc.id)}
         />
       )}
 
+      {/* Cover area */}
       <div
         style={{
-          height: 140,
+          height: 148,
           background: ftConf.gradient,
-          borderRadius: 8,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          marginBottom: 12,
           position: 'relative',
           overflow: 'hidden',
         }}
       >
-        {/* AI 生成封面图（优先），fallback 到渐变色+图标 */}
+        {/* Subtle shimmer overlay on gradient */}
+        <div style={{
+          position: 'absolute', inset: 0,
+          background: 'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 50%, rgba(0,0,0,0.1) 100%)',
+          pointerEvents: 'none',
+        }} />
+
         {doc.cover_url ? (
           <img
             src={(() => {
@@ -222,7 +229,11 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
             onError={(e) => { e.target.style.display = 'none'; }}
           />
         ) : (
-          <IconComp style={{ fontSize: 40, color: 'rgba(255,255,255,0.85)' }} />
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+          }}>
+            <IconComp style={{ fontSize: 44, color: 'rgba(255,255,255,0.9)' }} />
+          </div>
         )}
 
         {/* Hover 播放蒙层 */}
@@ -230,54 +241,69 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
           <div
             onClick={(e) => { e.stopPropagation(); navigate(`/study/${doc.id}`); }}
             style={{
-              position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              position: 'absolute', inset: 0,
+              background: 'linear-gradient(135deg, rgba(45,206,137,0.75), rgba(17,205,239,0.6))',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
               opacity: 0, transition: 'opacity 0.25s', cursor: 'pointer',
             }}
             onMouseEnter={(e) => { e.currentTarget.style.opacity = 1; }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = 0; }}
           >
-            <PlayCircleOutlined style={{ fontSize: 42, color: '#fff' }} />
+            <PlayCircleOutlined style={{ fontSize: 44, color: '#fff' }} />
+            <span style={{ color: '#fff', fontSize: 12, fontWeight: 600 }}>AI 讲解</span>
           </div>
         )}
+
         {doc.lecture_visibility === 'public' && (
-          <Tag color="green" style={{ position: 'absolute', top: 8, right: 8, margin: 0, borderRadius: 4 }}>
-            <GlobalOutlined /> 公开
-          </Tag>
+          <div style={{
+            position: 'absolute', top: 8, right: 8, margin: 0,
+            background: 'rgba(45,206,137,0.9)', color: '#fff',
+            borderRadius: 6, fontSize: 11, padding: '2px 7px',
+            fontWeight: 500, display: 'flex', alignItems: 'center', gap: 3,
+          }}>
+            <GlobalOutlined style={{ fontSize: 10 }} /> 公开
+          </div>
         )}
-        <Tag
-          style={{
-            position: 'absolute', bottom: 8, left: 8, margin: 0, borderRadius: 4,
-            fontSize: 11, textTransform: 'uppercase',
-            background: 'rgba(0,0,0,0.3)', color: '#fff', border: 'none',
-          }}
-        >
+        <div style={{
+          position: 'absolute', bottom: 8, left: 8,
+          background: 'rgba(0,0,0,0.4)', color: '#fff', border: 'none',
+          borderRadius: 5, fontSize: 10, padding: '2px 6px',
+          textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.5px',
+        }}>
           {doc.file_type}
-        </Tag>
+        </div>
       </div>
 
-      <Tooltip title={doc.title}>
-        <Paragraph
-          ellipsis={{ rows: 2 }}
-          style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, minHeight: 42 }}
-        >
-          {doc.title}
-        </Paragraph>
-      </Tooltip>
+      {/* Card body */}
+      <div style={{ padding: '12px 14px 14px' }}>
+        <Tooltip title={doc.title}>
+          <Paragraph
+            ellipsis={{ rows: 2 }}
+            style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, minHeight: 40, color: '#1a2332', lineHeight: 1.5 }}
+          >
+            {doc.title}
+          </Paragraph>
+        </Tooltip>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Tag color={st.color} style={{ borderRadius: 4 }}>
-          {st.text}
-        </Tag>
-        <Dropdown menu={{ items: menuItems, onClick: onMenuClick }} trigger={['click']}>
-          <Button
-            type="text"
-            size="small"
-            icon={<MoreOutlined />}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </Dropdown>
-      </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center',
+            padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+            background: st.color === 'green' ? 'rgba(45,206,137,0.1)' : st.color === 'processing' ? 'rgba(17,205,239,0.1)' : st.color === 'red' ? 'rgba(245,54,92,0.1)' : 'rgba(251,99,64,0.1)',
+            color: st.color === 'green' ? '#2dce89' : st.color === 'processing' ? '#11cdef' : st.color === 'red' ? '#f5365c' : '#fb6340',
+          }}>
+            {st.text}
+          </span>
+          <Dropdown menu={{ items: menuItems, onClick: onMenuClick }} trigger={['click']}>
+            <Button
+              type="text"
+              size="small"
+              icon={<MoreOutlined style={{ color: '#aab4be' }} />}
+              onClick={(e) => e.stopPropagation()}
+              style={{ borderRadius: 6 }}
+            />
+          </Dropdown>
+        </div>
 
       {(doc.status === 'processing' || doc.status === 'pending' || doc.status === 'importing') && (
         <div style={{ marginTop: 8 }}>
@@ -347,45 +373,60 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
       {doc.status === 'ready' && doc.summary && (
         <Paragraph
           ellipsis={{ rows: 2 }}
-          type="secondary"
-          style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}
+          style={{ fontSize: 11, marginTop: 8, marginBottom: 0, color: '#8896a8', lineHeight: 1.5 }}
         >
           {doc.summary}
         </Paragraph>
       )}
-    </Card>
+      </div>
+    </div>
   );
 }
 
 function AddCard({ onClick }) {
   return (
-    <Card
-      hoverable
+    <div
+      onClick={onClick}
       style={{
-        borderRadius: 12,
-        border: '2px dashed #d9d9d9',
-        height: '100%',
+        borderRadius: 14,
+        border: '1.5px dashed rgba(45,206,137,0.35)',
         minHeight: 280,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: '#fafafa',
+        background: 'linear-gradient(135deg, rgba(45,206,137,0.03), rgba(17,205,239,0.02))',
         cursor: 'pointer',
-        transition: 'border-color 0.2s',
+        transition: 'all 0.3s ease',
+        textAlign: 'center',
       }}
-      styles={{ body: { textAlign: 'center' } }}
-      onClick={onClick}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'rgba(45,206,137,0.65)';
+        e.currentTarget.style.background = 'linear-gradient(135deg, rgba(45,206,137,0.08), rgba(17,205,239,0.04))';
+        e.currentTarget.style.transform = 'translateY(-3px)';
+        e.currentTarget.style.boxShadow = '0 8px 24px rgba(45,206,137,0.12)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'rgba(45,206,137,0.35)';
+        e.currentTarget.style.background = 'linear-gradient(135deg, rgba(45,206,137,0.03), rgba(17,205,239,0.02))';
+        e.currentTarget.style.transform = 'translateY(0)';
+        e.currentTarget.style.boxShadow = 'none';
+      }}
     >
       <div>
-        <PlusOutlined style={{ fontSize: 32, color: '#bfbfbf', marginBottom: 12 }} />
+        <div style={{
+          width: 52, height: 52, borderRadius: 14, margin: '0 auto 12px',
+          background: 'linear-gradient(135deg, rgba(45,206,137,0.15), rgba(17,205,239,0.1))',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <PlusOutlined style={{ fontSize: 22, color: '#2dce89' }} />
+        </div>
+        <Text style={{ color: '#5a6a7e', fontWeight: 500, display: 'block', marginBottom: 4 }}>添加文档到书架</Text>
         <br />
-        <Text type="secondary">添加文档到书架</Text>
-        <br />
-        <Text type="secondary" style={{ fontSize: 12 }}>
+        <Text style={{ fontSize: 12, color: '#aab4be' }}>
           支持上传、书籍搜索
         </Text>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -1238,11 +1279,34 @@ export default function BookshelfPage() {
 
   return (
     <div className="fade-in" style={{ maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={2} style={{ marginBottom: 4 }}>
-          我的书架
-        </Title>
-        <Text type="secondary">管理你的文档，开启 AI 讲解之旅</Text>
+      {/* Page Header */}
+      <div style={{
+        marginBottom: 24,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
+        flexWrap: 'wrap', gap: 12,
+      }}>
+        <div>
+          <div style={{
+            fontSize: 26, fontWeight: 800, color: '#1a2332',
+            letterSpacing: '-0.5px', marginBottom: 4,
+          }}>
+            我的书架
+          </div>
+          <Text style={{ color: '#8896a8', fontSize: 13 }}>管理你的文档，开启 AI 讲解之旅</Text>
+        </div>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => setAddDocModalOpen(true)}
+          style={{
+            background: 'linear-gradient(135deg, #2dce89, #11cdef)',
+            border: 'none', borderRadius: 10, height: 40,
+            paddingInline: 20, fontWeight: 600,
+            boxShadow: '0 4px 14px rgba(45,206,137,0.35)',
+          }}
+        >
+          添加文档
+        </Button>
       </div>
 
       <div
@@ -1293,27 +1357,20 @@ export default function BookshelfPage() {
             <>
               <Input
                 placeholder="搜索文档..."
-                prefix={<SearchOutlined />}
+                prefix={<SearchOutlined style={{ color: '#aab4be' }} />}
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
-                style={{ width: 200, borderRadius: 8 }}
+                style={{ width: 200, borderRadius: 10 }}
                 allowClear
               />
               <Tooltip title="刷新">
-                <Button icon={<ReloadOutlined />} onClick={handleRefreshAll} />
+                <Button icon={<ReloadOutlined />} onClick={handleRefreshAll} style={{ borderRadius: 10 }} />
               </Tooltip>
               <Tooltip title="批量操作">
-                <Button icon={<CheckOutlined />} onClick={() => setBatchMode(true)}>
+                <Button icon={<CheckOutlined />} onClick={() => setBatchMode(true)} style={{ borderRadius: 10 }}>
                   批量操作
                 </Button>
               </Tooltip>
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={() => setAddDocModalOpen(true)}
-              >
-                添加文档
-              </Button>
             </>
           )}
         </Space>

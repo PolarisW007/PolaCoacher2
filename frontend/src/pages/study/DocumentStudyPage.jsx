@@ -9,14 +9,13 @@ import {
   ArrowLeftOutlined, LeftOutlined, RightOutlined,
   EditOutlined, BulbOutlined, BookOutlined, TranslationOutlined,
   SaveOutlined, GlobalOutlined, LockOutlined, SoundOutlined,
-  PauseCircleOutlined, PlayCircleOutlined, FilePdfOutlined,
+  PauseCircleOutlined, PlayCircleOutlined,
   ShareAltOutlined, DownloadOutlined, StopOutlined, SendOutlined,
   MessageOutlined, PlusOutlined, DeleteOutlined, CloseOutlined,
   ReadOutlined, FileTextOutlined, MenuFoldOutlined, CopyOutlined,
   WechatOutlined, HeartOutlined, CheckCircleOutlined, TrophyOutlined,
 } from '@ant-design/icons';
 import { docApi, lectureNoteApi, ttsApi, historyApi, settingsApi, analysisApi } from '../../api/documents';
-import PdfViewer from '../../components/PdfViewer';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -51,7 +50,6 @@ const TAG_OPTIONS = [
 ];
 
 const RIGHT_PANEL_TABS = [
-  { key: 'pdf', label: 'PDF', icon: <FilePdfOutlined /> },
   { key: 'chat', label: 'AI问答', icon: <MessageOutlined /> },
   { key: 'notes', label: '备注', icon: <EditOutlined /> },
 ];
@@ -92,7 +90,7 @@ export default function DocumentStudyPage() {
   });
 
   // Right panel
-  const [rightPanel, setRightPanel] = useState('pdf');
+  const [rightPanel, setRightPanel] = useState('chat');
   const [rightPanelVisible, setRightPanelVisible] = useState(true);
 
   // Lecture notes
@@ -178,7 +176,6 @@ export default function DocumentStudyPage() {
   const isProcessing = doc?.status === 'processing' || doc?.status === 'pending';
   const hasPpt = doc?.ppt_content && doc.ppt_content.length > 0;
   const isPublished = doc?.lecture_visibility === 'public' || doc?.is_published;
-  const pdfUrl = docApi.getPdf(id);
   const totalPages = hasLecture ? slides.length : (doc?.page_count || 0);
   const hasPrev = currentPage > 0;
   const hasNext = currentPage < totalPages - 1;
@@ -811,79 +808,109 @@ export default function DocumentStudyPage() {
       </div>
 
       {slide.points && slide.points.length > 0 && (
-        <Card
-          size="small"
-          style={{
-            marginBottom: 20, borderRadius: 10,
-            background: 'linear-gradient(135deg, #f6ffed 0%, #e6fffb 100%)',
-            border: '1px solid #b7eb8f',
-          }}
-        >
-          <Text strong style={{ color: '#52c41a', fontSize: 13 }}>
+        <div style={{
+          marginBottom: 18, borderRadius: 12,
+          background: 'linear-gradient(135deg, rgba(45,206,137,0.06) 0%, rgba(17,205,239,0.04) 100%)',
+          border: '1px solid rgba(45,206,137,0.2)',
+          padding: '12px 16px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, color: '#2dce89', fontWeight: 600, fontSize: 13 }}>
             <BulbOutlined /> 核心要点
-          </Text>
-          <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {slide.points.map((p, i) => (
-              <li key={i} style={{ marginBottom: 4, lineHeight: 1.6, fontSize: 14 }}>{p}</li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
-      <Card
-        size="small"
-        style={{ marginBottom: 20, borderRadius: 10 }}
-        title={
-          <Space>
-            <BookOutlined style={{ color: '#1890ff' }} />
-            <Text strong>AI 讲解</Text>
-            {isPlaying && <Tag color="processing" style={{ marginLeft: 8 }}><SoundOutlined /> 播放中</Tag>}
-          </Space>
-        }
-      >
-        {sentences.length > 0 ? (
-          <div style={{ fontSize: 15, lineHeight: 2, color: '#333' }}>
-            {sentences.map((sentence, idx) => (
-              <span
-                key={idx}
-                style={{
-                  backgroundColor: idx === currentSentenceIdx ? '#bae7ff' : 'transparent',
-                  borderRadius: idx === currentSentenceIdx ? 4 : 0,
-                  padding: idx === currentSentenceIdx ? '2px 0' : 0,
-                  transition: 'background-color 0.3s ease',
-                }}
-              >
-                {sentence}
-              </span>
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <span style={{
+                  width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                  background: 'linear-gradient(135deg, #2dce89, #11cdef)',
+                  color: '#fff', fontSize: 10, fontWeight: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  marginTop: 2,
+                }}>
+                  {i + 1}
+                </span>
+                <span style={{ fontSize: 13.5, lineHeight: 1.65, color: '#2d3748' }}>{p}</span>
+              </div>
             ))}
           </div>
-        ) : (
-          <Paragraph style={{ fontSize: 15, lineHeight: 2, whiteSpace: 'pre-wrap', color: '#333' }}>
-            {slide.lecture_text || '暂无讲解内容'}
-          </Paragraph>
-        )}
-      </Card>
+        </div>
+      )}
+
+      <div style={{
+        marginBottom: 18, borderRadius: 12,
+        background: '#fff',
+        border: '1px solid rgba(226,234,243,0.8)',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          padding: '10px 16px', background: 'rgba(240,244,248,0.5)',
+          borderBottom: '1px solid rgba(226,234,243,0.6)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <BookOutlined style={{ color: '#2dce89', fontSize: 14 }} />
+          <Text strong style={{ fontSize: 13, color: '#1a2332' }}>AI 讲解</Text>
+          {isPlaying && (
+            <span style={{
+              padding: '1px 8px', borderRadius: 10, fontSize: 11,
+              background: 'rgba(17,205,239,0.1)', color: '#11cdef',
+              display: 'flex', alignItems: 'center', gap: 3,
+            }}>
+              <SoundOutlined style={{ fontSize: 10 }} /> 播放中
+            </span>
+          )}
+        </div>
+        <div style={{ padding: '14px 16px' }}>
+          {sentences.length > 0 ? (
+            <div style={{ fontSize: 15, lineHeight: 2, color: '#2d3748' }}>
+              {sentences.map((sentence, idx) => (
+                <span
+                  key={idx}
+                  style={{
+                    backgroundColor: idx === currentSentenceIdx ? 'rgba(45,206,137,0.18)' : 'transparent',
+                    borderRadius: idx === currentSentenceIdx ? 4 : 0,
+                    padding: idx === currentSentenceIdx ? '2px 2px' : 0,
+                    transition: 'background-color 0.3s ease',
+                  }}
+                >
+                  {sentence}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <Paragraph style={{ fontSize: 15, lineHeight: 2, whiteSpace: 'pre-wrap', color: '#2d3748', margin: 0 }}>
+              {slide.lecture_text || '暂无讲解内容'}
+            </Paragraph>
+          )}
+        </div>
+      </div>
 
       {showTranslation && slide.translation && (
-        <Card
-          size="small"
-          style={{ marginBottom: 20, borderRadius: 10, background: '#fffbe6', border: '1px solid #ffe58f' }}
-          title={<Space><TranslationOutlined style={{ color: '#faad14' }} /><Text strong>Translation</Text></Space>}
-        >
-          <Paragraph style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#666', fontStyle: 'italic' }}>
+        <div style={{
+          marginBottom: 18, borderRadius: 12,
+          background: 'rgba(251,99,64,0.04)',
+          border: '1px solid rgba(251,99,64,0.15)',
+          padding: '12px 16px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: '#fb6340', fontWeight: 600, fontSize: 13 }}>
+            <TranslationOutlined /> Translation
+          </div>
+          <Paragraph style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#5a6a7e', fontStyle: 'italic', margin: 0 }}>
             {slide.translation}
           </Paragraph>
-        </Card>
+        </div>
       )}
 
       {slide.page_text && (
-        <Card
-          size="small"
-          style={{ borderRadius: 10, background: '#f9f9f9', marginBottom: 20 }}
-          title={<Text type="secondary" style={{ fontSize: 12 }}>原文摘录</Text>}
-        >
-          <Text type="secondary" style={{ fontSize: 13, lineHeight: 1.6 }}>{slide.page_text}</Text>
-        </Card>
+        <div style={{
+          borderRadius: 12,
+          background: 'rgba(240,244,248,0.6)',
+          border: '1px solid rgba(226,234,243,0.6)',
+          padding: '12px 16px', marginBottom: 18,
+        }}>
+          <div style={{ fontSize: 11, color: '#aab4be', marginBottom: 6, fontWeight: 500, letterSpacing: '0.5px', textTransform: 'uppercase' }}>原文摘录</div>
+          <Text style={{ fontSize: 13, lineHeight: 1.65, color: '#8896a8' }}>{slide.page_text}</Text>
+        </div>
       )}
     </>
   );
@@ -958,15 +985,20 @@ export default function DocumentStudyPage() {
     return (
       <div style={{ width: 380, flexShrink: 0, borderLeft: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', background: '#fafafa', overflow: 'hidden' }}>
         {/* Panel tabs */}
-        <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0', background: '#fff', flexShrink: 0 }}>
+        <div style={{
+          display: 'flex', flexShrink: 0,
+          borderBottom: '1px solid rgba(226,234,243,0.8)',
+          background: 'rgba(255,255,255,0.95)',
+          padding: '0 8px',
+        }}>
           {RIGHT_PANEL_TABS.map(tab => (
             <div
               key={tab.key}
               onClick={() => setRightPanel(tab.key)}
               style={{
-                flex: 1, padding: '10px 0', textAlign: 'center', cursor: 'pointer',
-                borderBottom: rightPanel === tab.key ? '2px solid #1890ff' : '2px solid transparent',
-                color: rightPanel === tab.key ? '#1890ff' : '#666',
+                flex: 1, padding: '11px 0', textAlign: 'center', cursor: 'pointer',
+                borderBottom: rightPanel === tab.key ? '2px solid #2dce89' : '2px solid transparent',
+                color: rightPanel === tab.key ? '#2dce89' : '#8896a8',
                 fontWeight: rightPanel === tab.key ? 600 : 400,
                 fontSize: 13, transition: 'all 0.2s',
               }}
@@ -978,10 +1010,6 @@ export default function DocumentStudyPage() {
 
         {/* Panel content */}
         <div style={{ flex: 1, overflow: 'auto' }}>
-          {rightPanel === 'pdf' && (
-            <PdfViewer url={pdfUrl} currentPage={currentPage} height="calc(100vh - 200px)" filename={doc?.filename || 'document.pdf'} />
-          )}
-
           {rightPanel === 'chat' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div style={{ flex: 1, overflow: 'auto', padding: '12px 14px' }}>
@@ -1097,30 +1125,59 @@ export default function DocumentStudyPage() {
   };
 
   return (
-    <div style={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Top control bar */}
       <div style={{
-        padding: '8px 20px', background: '#fff', borderBottom: '1px solid #f0f0f0',
+        padding: '8px 20px',
+        background: 'rgba(255,255,255,0.95)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderBottom: '1px solid rgba(226,234,243,0.8)',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         flexShrink: 0, gap: 12, flexWrap: 'wrap',
+        boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
       }}>
         <Space size={8} style={{ flexShrink: 0 }}>
-          <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
-          <Text strong style={{ fontSize: 15, maxWidth: 200 }} ellipsis={{ tooltip: doc.title }}>{doc.title}</Text>
-          <Tag color={doc.status === 'ready' ? 'green' : doc.status === 'processing' ? 'blue' : 'default'}>
+          <Button
+            size="small"
+            icon={<ArrowLeftOutlined />}
+            onClick={() => navigate('/')}
+            style={{ borderRadius: 8, border: '1px solid #e2eaf3', color: '#5a6a7e' }}
+          >
+            返回
+          </Button>
+          <Text strong style={{ fontSize: 14, maxWidth: 200, color: '#1a2332' }} ellipsis={{ tooltip: doc.title }}>{doc.title}</Text>
+          <span style={{
+            padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+            background: doc.status === 'ready' ? 'rgba(45,206,137,0.1)' : 'rgba(17,205,239,0.1)',
+            color: doc.status === 'ready' ? '#2dce89' : '#11cdef',
+          }}>
             {doc.status === 'ready' ? '已就绪' : doc.status === 'processing' ? '处理中' : doc.status}
-          </Tag>
-          {isPublished && <Tag color="green"><GlobalOutlined /> 公开</Tag>}
+          </span>
+          {isPublished && (
+            <span style={{
+              padding: '2px 8px', borderRadius: 6, fontSize: 11,
+              background: 'rgba(45,206,137,0.1)', color: '#2dce89',
+              display: 'flex', alignItems: 'center', gap: 3,
+            }}>
+              <GlobalOutlined style={{ fontSize: 10 }} /> 公开
+            </span>
+          )}
         </Space>
 
         {hasLecture && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <Select size="small" style={{ width: 96 }} value={selectedVoice} onChange={setSelectedVoice} placeholder="语音"
+            <Select size="small" style={{ width: 96, borderRadius: 8 }} value={selectedVoice} onChange={setSelectedVoice} placeholder="语音"
               options={voices.map(v => ({ label: v.label || v.name || v.id || v, value: v.id || v.name || v }))}
             />
 
-            {/* 播放控制区：上一页 + 播放 + 下一页 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f5f5f5', borderRadius: 24, padding: '4px 8px' }}>
+            {/* 播放控制区 */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'rgba(240,244,248,0.8)',
+              borderRadius: 24, padding: '4px 8px',
+              border: '1px solid rgba(226,234,243,0.6)',
+            }}>
               {/* ⏮ 上一页 */}
               <Tooltip title="上一页（← 键）">
                 <button
@@ -1129,10 +1186,10 @@ export default function DocumentStudyPage() {
                   style={{
                     width: 32, height: 32, borderRadius: '50%', border: 'none',
                     background: hasPrev ? '#fff' : 'transparent',
-                    boxShadow: hasPrev ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
+                    boxShadow: hasPrev ? '0 2px 6px rgba(0,0,0,0.1)' : 'none',
                     cursor: hasPrev ? 'pointer' : 'not-allowed',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: hasPrev ? '#333' : '#bbb', fontSize: 13, flexShrink: 0,
+                    color: hasPrev ? '#1a2332' : '#ccc', fontSize: 13, flexShrink: 0,
                     transition: 'all 0.2s',
                   }}
                 >
@@ -1150,7 +1207,7 @@ export default function DocumentStudyPage() {
                   cursor: audioLoading ? 'wait' : 'pointer',
                   background: isPlaying
                     ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
-                    : 'linear-gradient(135deg, #2dce89 0%, #1a7a52 100%)',
+                    : 'linear-gradient(135deg, #2dce89 0%, #11cdef 100%)',
                   color: '#fff', fontSize: 14, fontWeight: 700,
                   boxShadow: isPlaying
                     ? '0 3px 12px rgba(245,87,108,0.45)'
@@ -1248,12 +1305,20 @@ export default function DocumentStudyPage() {
 
       {/* Audio progress bar */}
       {hasLecture && (isPlaying || audioProgress > 0 || audioDuration > 0) && (
-        <div style={{ padding: '4px 20px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-          <Text type="secondary" style={{ fontSize: 11, minWidth: 36 }}>{formatTime(audioProgress)}</Text>
-          <Slider min={0} max={audioDuration || 1} step={0.1} value={audioProgress} onChange={handleSeek}
+        <div style={{
+          padding: '4px 20px',
+          background: 'rgba(240,244,248,0.8)',
+          borderBottom: '1px solid rgba(226,234,243,0.6)',
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+        }}>
+          <Text style={{ fontSize: 11, color: '#aab4be', minWidth: 36 }}>{formatTime(audioProgress)}</Text>
+          <Slider
+            min={0} max={audioDuration || 1} step={0.1} value={audioProgress} onChange={handleSeek}
             tooltip={{ formatter: v => formatTime(v) }} style={{ flex: 1, margin: 0 }}
+            trackStyle={{ background: 'linear-gradient(90deg, #2dce89, #11cdef)' }}
+            handleStyle={{ borderColor: '#2dce89', boxShadow: '0 0 0 4px rgba(45,206,137,0.15)' }}
           />
-          <Text type="secondary" style={{ fontSize: 11, minWidth: 36 }}>{formatTime(audioDuration)}</Text>
+          <Text style={{ fontSize: 11, color: '#aab4be', minWidth: 36 }}>{formatTime(audioDuration)}</Text>
         </div>
       )}
 
@@ -1261,7 +1326,11 @@ export default function DocumentStudyPage() {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left nav — slide thumbnails (lecture mode) or doc meta (doc mode) */}
         {hasLecture ? (
-          <div ref={thumbnailListRef} style={{ width: 160, flexShrink: 0, borderRight: '1px solid #f0f0f0', overflowY: 'auto', background: '#fafafa', padding: '8px 0' }}>
+          <div ref={thumbnailListRef} style={{
+            width: 160, flexShrink: 0,
+            borderRight: '1px solid rgba(226,234,243,0.6)',
+            overflowY: 'auto', background: 'rgba(248,251,255,0.8)', padding: '8px 0',
+          }}>
             {slides.map((s, idx) => {
               const isListened = listenedPages.has(idx);
               const isCurrent = idx === currentPage;
@@ -1272,7 +1341,9 @@ export default function DocumentStudyPage() {
                   onClick={() => setCurrentPage(idx)}
                   style={{
                     padding: '10px 12px', cursor: 'pointer',
-                    background: isCurrent ? '#e6fffb' : isListened ? '#f6ffed' : 'transparent',
+                    background: isCurrent
+                      ? 'linear-gradient(135deg, rgba(45,206,137,0.12), rgba(17,205,239,0.06))'
+                      : isListened ? 'rgba(45,206,137,0.04)' : 'transparent',
                     borderLeft: isCurrent ? '3px solid #2dce89' : '3px solid transparent',
                     transition: 'all 0.2s',
                   }}
@@ -1321,7 +1392,7 @@ export default function DocumentStudyPage() {
         )}
 
         {/* Center content */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px', background: '#fff' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px', background: '#fcfeff' }}>
           {hasLecture ? renderLectureContent() : renderDocContent()}
 
           {hasLecture && (

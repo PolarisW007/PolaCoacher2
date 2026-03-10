@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Spin, Result, Typography } from 'antd';
+import { Spin, Result, Typography, Card } from 'antd';
 import { useAuth } from '../../store/AuthContext';
 
 const { Text } = Typography;
@@ -31,38 +31,78 @@ export default function OAuthCallbackPage() {
     }
   }, [searchParams, login, fetchUser, navigate]);
 
+  const containerStyle = {
+    minHeight: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'linear-gradient(135deg, #0f1923 0%, #0d2436 40%, #0a2a1e 100%)',
+    position: 'relative',
+    overflow: 'hidden',
+  };
+
+  const cardStyle = {
+    width: 400,
+    background: 'rgba(255,255,255,0.97)',
+    borderRadius: 20,
+    padding: '20px',
+    boxShadow: '0 24px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.1)',
+    textAlign: 'center'
+  };
+
   if (status === 'loading') {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Spin size="large" tip="正在登录中..." />
+      <div style={containerStyle}>
+        <Card style={cardStyle} bordered={false}>
+          <Spin size="large" tip={<span style={{ marginTop: 16, display: 'block', color: '#5a6a7e' }}>正在登录中...</span>} />
+        </Card>
       </div>
     );
   }
 
   if (status === 'error') {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Result
-          status="error"
-          title="登录失败"
-          subTitle="扫码授权失败，请重试"
-          extra={
-            <Text
-              type="link"
-              style={{ cursor: 'pointer' }}
-              onClick={() => navigate('/login')}
-            >
-              返回登录页
-            </Text>
-          }
-        />
+      <div style={containerStyle}>
+        <Card style={cardStyle} bordered={false}>
+          <Result
+            status="error"
+            title={<span style={{ color: '#1a2332' }}>登录失败</span>}
+            subTitle={<span style={{ color: '#5a6a7e' }}>扫码授权失败，请重试</span>}
+            extra={
+              <div
+                style={{
+                  display: 'inline-block',
+                  padding: '10px 24px',
+                  borderRadius: 10,
+                  background: 'rgba(240,244,248,0.8)',
+                  color: '#1a2332',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                  transition: 'all 0.2s ease',
+                  border: '1px solid #e2eaf3'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#e2eaf3'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(240,244,248,0.8)'}
+                onClick={() => navigate('/login')}
+              >
+                返回登录页
+              </div>
+            }
+          />
+        </Card>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Result status="success" title="登录成功" subTitle="正在跳转..." />
+    <div style={containerStyle}>
+      <Card style={cardStyle} bordered={false}>
+        <Result 
+          status="success" 
+          title={<span style={{ color: '#1a2332' }}>登录成功</span>} 
+          subTitle={<span style={{ color: '#5a6a7e' }}>正在跳转...</span>} 
+        />
+      </Card>
     </div>
   );
 }
