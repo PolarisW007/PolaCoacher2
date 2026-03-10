@@ -43,6 +43,11 @@ def _add_missing_columns(conn):
             "publish_year": "INTEGER",
             "language": "VARCHAR(20)",
             "group_id": "INTEGER",
+            "chapters": "TEXT",
+            "parsed_content": "TEXT",
+            "translation_status": "VARCHAR(20)",
+            "translation_lang": "VARCHAR(10)",
+            "translated_content": "TEXT",
         },
         "users": {
             "wechat_openid": "VARCHAR(128)",
@@ -122,8 +127,10 @@ _base = Path(__file__).resolve().parent.parent
 _upload_dir = _base / "data" / "uploads"
 _audio_dir = _base / "data" / "audio"
 _cover_dir = _base / "data" / "covers"
-for _d in (_upload_dir, _audio_dir, _cover_dir):
+_doc_images_dir = _base / "data" / "doc_images"
+for _d in (_upload_dir, _audio_dir, _cover_dir, _doc_images_dir):
     _d.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_upload_dir)), name="uploads")
 app.mount("/audio", StaticFiles(directory=str(_audio_dir)), name="audio")
 app.mount("/covers", StaticFiles(directory=str(_cover_dir)), name="covers")
+app.mount("/doc_images", StaticFiles(directory=str(_doc_images_dir)), name="doc_images")

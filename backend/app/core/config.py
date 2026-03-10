@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = _PROJECT_ROOT / "data" / "uploads"
     AUDIO_DIR: Path = _PROJECT_ROOT / "data" / "audio"
     COVER_DIR: Path = _PROJECT_ROOT / "data" / "covers"
+    DOC_IMAGES_DIR: Path = _PROJECT_ROOT / "data" / "doc_images"
 
     MAX_UPLOAD_SIZE_MB: int = 100
     ALLOWED_EXTENSIONS: set[str] = {"pdf", "docx", "txt", "md"}
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def ensure_dirs(self) -> None:
-        for d in (self.UPLOAD_DIR, self.AUDIO_DIR, self.COVER_DIR):
+        for d in (self.UPLOAD_DIR, self.AUDIO_DIR, self.COVER_DIR, self.DOC_IMAGES_DIR):
             d.mkdir(parents=True, exist_ok=True)
 
 

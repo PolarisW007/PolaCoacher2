@@ -150,6 +150,13 @@ export default function DocumentReaderPage() {
   const [pdfTotal, setPdfTotal] = useState(0);
   const pdfGoToRef = useRef(null);
 
+  // ── 分页阅读：当前 PDF 页（文本模式按原始页分页）────────
+  const [readPage, setReadPage] = useState(1);   // 1-based 原始 PDF 页
+  // 计算总页数（paragraphs 中 page 字段的最大值）
+  const totalReadPages = paragraphs.length > 0
+    ? Math.max(...paragraphs.map((p) => p.page || 1), 1)
+    : 1;
+
   // ── 阅读区 ref ────────────────────────────────────────────
   const readingAreaRef = useRef(null);
   const chapterRefs = useRef({});   // {chapterId: DOM}
@@ -302,15 +309,19 @@ export default function DocumentReaderPage() {
   // 键盘翻页（PDF 模式）
   // ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (mainView !== 'pdf') return;
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') pdfGoToRef.current?.(pdfPage + 1);
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') pdfGoToRef.current?.(pdfPage - 1);
+      if (mainView === 'pdf') {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') pdfGoToRef.current?.(pdfPage + 1);
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') pdfGoToRef.current?.(pdfPage - 1);
+      } else if (mainView === 'text') {
+        if (e.key === 'ArrowRight') setReadPage((p) => Math.min(totalReadPages, p + 1));
+        if (e.key === 'ArrowLeft') setReadPage((p) => Math.max(1, p - 1));
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [mainView, pdfPage]);
+  }, [mainView, pdfPage, totalReadPages]);
 
   // ─────────────────────────────────────────────────────────
   // 文字选中监听 → 显示浮层工具栏
@@ -703,8 +714,14 @@ export default function DocumentReaderPage() {
               <div
                 key={ch.id}
                 onClick={() => {
-                  const el = chapterRefs.current[ch.id];
-                  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  // 跳到该章节所在页
+                  const firstPara = paragraphs.find((p) => p.chapter_id === ch.id);
+                  if (firstPara && firstPara.page) {
+                    setReadPage(firstPara.page);
+                  } else {
+                    const el = chapterRefs.current[ch.id];
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
                 }}
                 style={{
                   padding: `7px ${16 + (ch.level - 1) * 14}px`,
@@ -771,6 +788,11 @@ export default function DocumentReaderPage() {
   // ─────────────────────────────────────────────────────────
   // 渲染：主文本阅读区
   // ─────────────────────────────────────────────────────────
+  // ── 分页切换时滚到顶 ─────────────────────────────────────
+  useEffect(() => {
+    if (readingAreaRef.current) readingAreaRef.current.scrollTop = 0;
+  }, [readPage]);
+
   const renderTextView = () => {
     if (contentLoading) {
       return (
@@ -803,17 +825,17 @@ export default function DocumentReaderPage() {
       );
     }
 
-    // 按章节分组段落
-    const chapterMap = {};
-    const noneChapterParas = [];
-    for (const p of paragraphs) {
-      if (p.chapter_id) {
-        if (!chapterMap[p.chapter_id]) chapterMap[p.chapter_id] = [];
-        chapterMap[p.chapter_id].push(p);
-      } else {
-        noneChapterParas.push(p);
-      }
-    }
+    // 当前页的段落（按 PDF 原始页过滤；page=0 的（docx/txt）全部显示）
+    const allHavePage = paragraphs.some((p) => (p.page || 0) > 0);
+    const currentParas = allHavePage
+      ? paragraphs.filter((p) => (p.page || 1) === readPage)
+      : paragraphs;  // 无分页信息时显示全部
+
+    // 找本页涉及的章节（用于显示章节标题）
+    const pageChapterIds = [...new Set(currentParas.map((p) => p.chapter_id).filter(Boolean))];
+    const pageChapters = pageChapterIds
+      .map((cid) => chapters.find((c) => c.id === cid))
+      .filter(Boolean);
 
     const contentStyle = {
       fontFamily: prefs.fontFamily,
@@ -821,10 +843,11 @@ export default function DocumentReaderPage() {
       lineHeight: prefs.lineHeight,
       color: bgConfig.text,
       background: bgConfig.value,
-      maxWidth: 720,
+      maxWidth: 740,
       margin: '0 auto',
-      padding: '40px 28px 120px',
+      padding: '32px 28px 40px',
       transition: 'all 0.3s',
+      minHeight: '60vh',
     };
 
     return (
@@ -833,20 +856,15 @@ export default function DocumentReaderPage() {
         style={{ flex: 1, overflowY: 'auto', background: bgConfig.value, transition: 'background 0.3s' }}
       >
         <div style={contentStyle}>
-          {chapters.map((ch) => {
-            const chParas = chapterMap[ch.id] || [];
+          {/* 显示本页出现的新章节标题 */}
+          {pageChapters.map((ch) => {
+            // 只在该章节第一段位于本页时显示标题
+            const firstParaOfChapter = paragraphs.find((p) => p.chapter_id === ch.id);
+            if (firstParaOfChapter && (firstParaOfChapter.page || 1) !== readPage) return null;
             const translatedTitle = translatedChapterTitles[ch.id];
-            const showTranslated = langMode !== 'original' && translatedTitle;
             const chapterTitle = langMode === 'translated' && translatedTitle ? translatedTitle : ch.title;
-
             return (
-              <div
-                key={ch.id}
-                ref={(el) => { chapterRefs.current[ch.id] = el; }}
-                data-chapter-id={ch.id}
-                style={{ marginBottom: 48 }}
-              >
-                {/* 章节标题 */}
+              <div key={ch.id} ref={(el) => { chapterRefs.current[ch.id] = el; }} data-chapter-id={ch.id}>
                 {ch.level === 1 ? (
                   <h2 style={{
                     fontSize: prefs.fontSize + 6, fontWeight: 700, color: bgConfig.text,
@@ -855,10 +873,8 @@ export default function DocumentReaderPage() {
                     paddingBottom: 12,
                   }}>
                     {chapterTitle}
-                    {langMode === 'bilingual' && translatedTitle && chapterTitle !== translatedTitle && (
-                      <div style={{ fontSize: prefs.fontSize + 2, color: '#888', fontWeight: 400, marginTop: 4 }}>
-                        {translatedTitle}
-                      </div>
+                    {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
+                      <div style={{ fontSize: prefs.fontSize + 2, color: '#888', fontWeight: 400, marginTop: 4 }}>{translatedTitle}</div>
                     )}
                   </h2>
                 ) : (
@@ -867,34 +883,21 @@ export default function DocumentReaderPage() {
                     marginBottom: 14, marginTop: 28, lineHeight: 1.4,
                   }}>
                     {chapterTitle}
-                    {langMode === 'bilingual' && translatedTitle && chapterTitle !== translatedTitle && (
-                      <div style={{ fontSize: prefs.fontSize + 1, color: '#888', fontWeight: 400, marginTop: 3 }}>
-                        {translatedTitle}
-                      </div>
+                    {langMode === 'bilingual' && translatedTitle && translatedTitle !== ch.title && (
+                      <div style={{ fontSize: prefs.fontSize + 1, color: '#888', fontWeight: 400, marginTop: 3 }}>{translatedTitle}</div>
                     )}
                   </h3>
                 )}
-
-                {/* 章节段落 */}
-                {chParas.map((para) => (
-                  <ParagraphBlock
-                    key={para.id}
-                    para={para}
-                    langMode={langMode}
-                    translationMap={translationMap}
-                    translationStatus={translationStatus}
-                    prefs={prefs}
-                    bgConfig={bgConfig}
-                    highlights={highlights}
-                    renderParaText={renderParaText}
-                  />
-                ))}
               </div>
             );
           })}
 
-          {/* 无章节划分的段落 */}
-          {noneChapterParas.map((para) => (
+          {/* 本页段落 */}
+          {currentParas.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 0', opacity: 0.4 }}>
+              <Text style={{ color: bgConfig.text, fontSize: 14 }}>本页暂无文字内容</Text>
+            </div>
+          ) : currentParas.map((para) => (
             <ParagraphBlock
               key={para.id}
               para={para}
@@ -905,15 +908,57 @@ export default function DocumentReaderPage() {
               bgConfig={bgConfig}
               highlights={highlights}
               renderParaText={renderParaText}
+              apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
             />
           ))}
 
-          {/* 末尾完成标记 */}
-          <div style={{ textAlign: 'center', marginTop: 60, padding: '24px 0', opacity: 0.5 }}>
-            <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
-            <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
-          </div>
+          {/* 最后一页完成标记 */}
+          {readPage >= totalReadPages && (
+            <div style={{ textAlign: 'center', marginTop: 48, padding: '24px 0', opacity: 0.5 }}>
+              <CheckCircleOutlined style={{ fontSize: 24, color: '#2dce89' }} />
+              <div style={{ marginTop: 8, fontSize: 13, color: bgConfig.text }}>全文完</div>
+            </div>
+          )}
         </div>
+
+        {/* 底部翻页栏（文字模式）*/}
+        {allHavePage && (
+          <div style={{
+            position: 'sticky', bottom: 0,
+            background: bgConfig.key === 'dark' ? 'rgba(26,26,46,0.96)' : 'rgba(255,255,255,0.96)',
+            backdropFilter: 'blur(8px)',
+            borderTop: `1px solid ${bgConfig.key === 'dark' ? '#333' : '#eee'}`,
+            padding: '10px 24px',
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <Button
+              size="small" icon={<LeftOutlined />}
+              disabled={readPage <= 1}
+              onClick={() => setReadPage((p) => Math.max(1, p - 1))}
+              style={{ flexShrink: 0, borderRadius: 20, padding: '0 12px', height: 28 }}
+            >
+              上一页
+            </Button>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input
+                type="range" min={1} max={totalReadPages} value={readPage}
+                onChange={(e) => setReadPage(Number(e.target.value))}
+                style={{ flex: 1, accentColor: '#1890ff', cursor: 'pointer' }}
+              />
+            </div>
+            <Text type="secondary" style={{ fontSize: 12, flexShrink: 0, color: bgConfig.text, opacity: 0.7 }}>
+              {readPage} / {totalReadPages} 页
+            </Text>
+            <Button
+              size="small" icon={<RightOutlined />}
+              disabled={readPage >= totalReadPages}
+              onClick={() => setReadPage((p) => Math.min(totalReadPages, p + 1))}
+              style={{ flexShrink: 0, borderRadius: 20, padding: '0 12px', height: 28 }}
+            >
+              下一页
+            </Button>
+          </div>
+        )}
       </div>
     );
   };
@@ -1192,8 +1237,29 @@ export default function DocumentReaderPage() {
 // ─────────────────────────────────────────────────────────
 // 段落渲染子组件
 // ─────────────────────────────────────────────────────────
-function ParagraphBlock({ para, langMode, translationMap, translationStatus, prefs, bgConfig, highlights, renderParaText }) {
+function ParagraphBlock({ para, langMode, translationMap, translationStatus, prefs, bgConfig, highlights, renderParaText, apiBase = '' }) {
   if (para.type === 'empty') return null;
+
+  // ── 图片节点 ────────────────────────────────────────────
+  if (para.type === 'image') {
+    const src = para.src?.startsWith('http') ? para.src : `${apiBase}${para.src}`;
+    return (
+      <div style={{ textAlign: 'center', margin: '20px 0' }}>
+        <img
+          src={src}
+          alt={para.text || '图片'}
+          style={{
+            maxWidth: '100%',
+            maxHeight: 480,
+            objectFit: 'contain',
+            borderRadius: 8,
+            boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
+          }}
+          onError={(e) => { e.target.style.display = 'none'; }}
+        />
+      </div>
+    );
+  }
 
   const originalText = renderParaText(para);
   const translatedText = translationMap[para.id];

@@ -272,6 +272,8 @@ async def _generate_all_lectures(
 
 async def _extract_and_translate(doc_id: int, file_path: str, file_type: str) -> None:
     """后台异步：提取结构化内容，检测语言，非中文自动翻译"""
+    from app.core.config import settings
+
     async with async_session_factory() as db:
         try:
             result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -279,8 +281,14 @@ async def _extract_and_translate(doc_id: int, file_path: str, file_type: str) ->
             if not doc:
                 return
 
-            logger.info(f"[Doc {doc_id}] 开始结构化内容提取")
-            chapters, paragraphs = await asyncio.to_thread(extract_structured, file_path, file_type)
+            # 图片保存目录
+            image_dir = str(settings.DOC_IMAGES_DIR)
+            image_url_prefix = "/doc_images"
+
+            logger.info(f"[Doc {doc_id}] 开始结构化内容提取（含图片）")
+            chapters, paragraphs = await asyncio.to_thread(
+                extract_structured, file_path, file_type, image_dir, image_url_prefix
+            )
 
             if not paragraphs:
                 logger.warning(f"[Doc {doc_id}] 结构化提取结果为空，跳过")
