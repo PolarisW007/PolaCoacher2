@@ -382,7 +382,7 @@ function AddCard({ onClick }) {
         <Text type="secondary">添加文档到书架</Text>
         <br />
         <Text type="secondary" style={{ fontSize: 12 }}>
-          支持上传、URL导入、书籍搜索
+          支持上传、书籍搜索
         </Text>
       </div>
     </Card>
@@ -469,14 +469,12 @@ function GroupCard({ group, docs, onRefresh, onEdit, onDelete, allGroups, onMove
 }
 
 function AddDocModal({ open, onClose, onUploadDone }) {
-  const [mode, setMode] = useState(null); // null | 'upload' | 'url' | 'book'
-  const [urlForm] = Form.useForm();
+  const [mode, setMode] = useState(null); // null | 'upload' | 'book'
   const [bookQuery, setBookQuery] = useState('');
   const [bookResults, setBookResults] = useState([]);
   const [bookSearching, setBookSearching] = useState(false);
   const [importingBooks, setImportingBooks] = useState(new Set());
   const [uploading, setUploading] = useState(false);
-  const [urlSubmitting, setUrlSubmitting] = useState(false);
 
   const resetState = () => {
     setMode(null);
@@ -485,8 +483,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     setBookSearching(false);
     setImportingBooks(new Set());
     setUploading(false);
-    setUrlSubmitting(false);
-    urlForm.resetFields();
   };
 
   const handleClose = () => {
@@ -507,22 +503,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
       setUploading(false);
     }
     return false;
-  };
-
-  const handleUrlSubmit = async () => {
-    try {
-      const values = await urlForm.validateFields();
-      setUrlSubmitting(true);
-      await docApi.importUrl({ url: values.url, title: values.title || undefined });
-      message.success('URL 导入成功，AI 正在处理中...');
-      onUploadDone?.();
-      handleClose();
-    } catch (err) {
-      if (err.errorFields) return;
-      message.error(err.message);
-    } finally {
-      setUrlSubmitting(false);
-    }
   };
 
   const [searchError, setSearchError] = useState('');
@@ -624,18 +604,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
         hoverable
         style={optionCardStyle}
         styles={{ body: { padding: '24px 16px' } }}
-        onClick={() => setMode('url')}
-      >
-        <LinkOutlined style={{ fontSize: 32, color: '#1890ff', marginBottom: 8 }} />
-        <br />
-        <Text strong>URL 导入</Text>
-        <br />
-        <Text type="secondary" style={{ fontSize: 12 }}>从网页链接导入</Text>
-      </Card>
-      <Card
-        hoverable
-        style={optionCardStyle}
-        styles={{ body: { padding: '24px 16px' } }}
         onClick={() => setMode('book')}
       >
         <BookOutlined style={{ fontSize: 32, color: '#722ed1', marginBottom: 8 }} />
@@ -663,32 +631,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
       </Upload.Dragger>
       {uploading && <Spin style={{ marginTop: 16 }} tip="上传中..." />}
     </div>
-  );
-
-  const renderUrlImport = () => (
-    <Form form={urlForm} layout="vertical" style={{ marginTop: 8 }}>
-      <Form.Item
-        name="url"
-        label="网页链接"
-        rules={[
-          { required: true, message: '请输入 URL' },
-          { type: 'url', message: '请输入有效的 URL' },
-        ]}
-      >
-        <Input placeholder="https://example.com/article" prefix={<LinkOutlined />} />
-      </Form.Item>
-      <Form.Item name="title" label="标题（可选）">
-        <Input placeholder="自定义文档标题，留空则自动识别" />
-      </Form.Item>
-      <div style={{ textAlign: 'right' }}>
-        <Space>
-          <Button onClick={() => setMode(null)}>返回</Button>
-          <Button type="primary" onClick={handleUrlSubmit} loading={urlSubmitting}>
-            导入
-          </Button>
-        </Space>
-      </div>
-    </Form>
   );
 
   const renderBookSearch = () => (
@@ -838,7 +780,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
   const titleMap = {
     null: '添加文档',
     upload: '本地上传',
-    url: 'URL 导入',
     book: '书籍搜索',
   };
 
@@ -853,7 +794,6 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     >
       {mode === null && renderModeSelection()}
       {mode === 'upload' && renderUpload()}
-      {mode === 'url' && renderUrlImport()}
       {mode === 'book' && renderBookSearch()}
     </Modal>
   );
