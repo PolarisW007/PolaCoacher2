@@ -47,6 +47,11 @@ export const docApi = {
   deleteNote: (noteId) => client.delete(`/notes/${noteId}`),
   shareXhs: (id) => client.post(`/documents/${id}/share/xiaohongshu`),
   shareMoments: (id) => client.post(`/documents/${id}/share/moments`),
+  // 阅读器相关
+  getContent: (id, params) => client.get(`/documents/${id}/content`, { params }),
+  getTranslation: (id, params) => client.get(`/documents/${id}/translation`, { params }),
+  triggerTranslate: (id, targetLang) => client.post(`/documents/${id}/translate`, { target_lang: targetLang }),
+  reparse: (id) => client.post(`/documents/${id}/reparse`),
 };
 
 export const groupApi = {

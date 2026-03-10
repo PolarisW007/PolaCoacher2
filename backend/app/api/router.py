@@ -11,6 +11,7 @@ from app.api.endpoints import (
     history,
     lecture_notes,
     notifications,
+    reader,
     share,
     tts,
     user_settings,
@@ -36,3 +37,4 @@ api_router.include_router(bookshelf.router)
 api_router.include_router(history.router)
 api_router.include_router(user_settings.router)
 api_router.include_router(analysis.router)
+api_router.include_router(reader.router)

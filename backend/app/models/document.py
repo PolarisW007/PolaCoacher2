@@ -41,6 +41,15 @@ class Document(Base):
     processing_step: Mapped[str | None] = mapped_column(String(50), nullable=True)
     audio_ready_pages: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # 结构化阅读内容
+    chapters: Mapped[dict | None] = mapped_column(JSON, nullable=True)          # [{id, title, start_para, level}]
+    parsed_content: Mapped[dict | None] = mapped_column(JSON, nullable=True)    # [{id, chapter_id, type, text}]
+
+    # 翻译
+    translation_status: Mapped[str | None] = mapped_column(String(20), nullable=True)   # null|translating|done|failed
+    translation_lang: Mapped[str | None] = mapped_column(String(10), nullable=True)     # zh|en
+    translated_content: Mapped[dict | None] = mapped_column(JSON, nullable=True)        # [{chapter_id, paragraphs:[{id,text}]}]
+
     cover_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     lecture_visibility: Mapped[str] = mapped_column(String(10), default="private")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

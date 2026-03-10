@@ -16,6 +16,11 @@ from app.services.ai_service import (
     generate_summary,
     translate_text,
 )
+from app.services.content_service import (
+    detect_language,
+    extract_structured,
+    translate_chapters,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +160,9 @@ async def process_document(doc_id: int) -> None:
             logger.info(f"[Doc {doc_id}] 处理完成 ✓ ({len(slides)} slides)")
 
             asyncio.create_task(_pregenerate_audio(doc_id, min(3, len(slides))))
-            # 异步生成封面图（不阻塞主流程，已有缓存则跳过）
             asyncio.create_task(_generate_cover_for_doc(doc_id))
+            # 异步提取结构化内容 + 自动翻译
+            asyncio.create_task(_extract_and_translate(doc_id, doc.file_path, doc.file_type))
 
         except Exception as e:
             logger.error(f"[Doc {doc_id}] 处理异常: {e}", exc_info=True)
@@ -262,6 +268,43 @@ async def _generate_all_lectures(
         else:
             slides.append(r)
     return slides
+
+
+async def _extract_and_translate(doc_id: int, file_path: str, file_type: str) -> None:
+    """后台异步：提取结构化内容，检测语言，非中文自动翻译"""
+    async with async_session_factory() as db:
+        try:
+            result = await db.execute(select(Document).where(Document.id == doc_id))
+            doc = result.scalar_one_or_none()
+            if not doc:
+                return
+
+            logger.info(f"[Doc {doc_id}] 开始结构化内容提取")
+            chapters, paragraphs = await asyncio.to_thread(extract_structured, file_path, file_type)
+
+            if not paragraphs:
+                logger.warning(f"[Doc {doc_id}] 结构化提取结果为空，跳过")
+                return
+
+            doc.chapters = chapters
+            doc.parsed_content = paragraphs
+            await db.commit()
+            logger.info(f"[Doc {doc_id}] 结构化提取完成：{len(chapters)} 章，{len(paragraphs)} 段")
+
+            # 语言检测
+            sample_text = " ".join(p["text"] for p in paragraphs[:50])
+            lang = detect_language(sample_text)
+            doc.language = lang
+            await db.commit()
+
+            # 非中文文档自动翻译为中文
+            if lang != "zh":
+                logger.info(f"[Doc {doc_id}] 检测到外文({lang})，开始自动翻译")
+                asyncio.create_task(
+                    translate_chapters(chapters, paragraphs, lang, "zh", doc_id, async_session_factory)
+                )
+        except Exception as e:
+            logger.error(f"[Doc {doc_id}] 结构化提取/翻译异常: {e}", exc_info=True)
 
 
 async def _generate_cover_for_doc(doc_id: int) -> None:
