@@ -322,3 +322,42 @@ a {
 .ant-spin-dot-item {
   background-color: #2dce89 !important;
 }
+
+/* ===== DOCUMENT STUDY PAGE RESPONSIVE ===== */
+.study-header {
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none;  /* IE and Edge */
+}
+.study-header::-webkit-scrollbar {
+  display: none; /* Chrome, Safari and Opera */
+}
+
+.study-right-panel {
+  transition: all 0.3s ease;
+}
+
+@media (max-width: 768px) {
+  .study-left-panel {
+    display: none !important;
+  }
+  .study-right-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 1000;
+    width: 100% !important;
+    max-width: 320px;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.1);
+  }
+  .study-center-panel {
+    padding: 16px 16px !important;
+  }
+  .study-header-text {
+    display: none !important;
+  }
+}
+

@@ -1,0 +1,15 @@
+#!/usr/bin/expect -f
+set timeout 30
+spawn ssh -o StrictHostKeyChecking=no pola1@42.121.164.11
+expect {
+    "*assword:*" { send "Kknd2pal\r" }
+    "yes/no" { send "yes\r"; exp_continue }
+    timeout { puts "Timeout waiting for password prompt"; exit 1 }
+}
+expect {
+    -re {[$#] } { send "ls -la && find ~ -maxdepth 3 -type d -name '*Coacher*'\r" }
+    timeout { puts "Timeout waiting for shell prompt"; exit 1 }
+}
+expect {
+    -re {[$#] } { send "exit\r" }
+}

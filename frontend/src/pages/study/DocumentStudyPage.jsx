@@ -91,7 +91,7 @@ export default function DocumentStudyPage() {
 
   // Right panel
   const [rightPanel, setRightPanel] = useState('chat');
-  const [rightPanelVisible, setRightPanelVisible] = useState(true);
+  const [rightPanelVisible, setRightPanelVisible] = useState(false);
 
   // Lecture notes
   const [noteContent, setNoteContent] = useState('');
@@ -983,7 +983,7 @@ export default function DocumentStudyPage() {
     if (!rightPanelVisible) return null;
 
     return (
-      <div style={{ width: 380, flexShrink: 0, borderLeft: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', background: '#fafafa', overflow: 'hidden' }}>
+      <div className="study-right-panel" style={{ width: 380, flexShrink: 0, borderLeft: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', background: '#fafafa', overflow: 'hidden' }}>
         {/* Panel tabs */}
         <div style={{
           display: 'flex', flexShrink: 0,
@@ -1127,14 +1127,14 @@ export default function DocumentStudyPage() {
   return (
     <div style={{ height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Top control bar */}
-      <div style={{
+      <div className="study-header" style={{
         padding: '8px 20px',
         background: 'rgba(255,255,255,0.95)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         borderBottom: '1px solid rgba(226,234,243,0.8)',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        flexShrink: 0, gap: 12, flexWrap: 'wrap',
+        flexShrink: 0, gap: 12,
         boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
       }}>
         <Space size={8} style={{ flexShrink: 0 }}>
@@ -1144,13 +1144,14 @@ export default function DocumentStudyPage() {
             onClick={() => navigate('/')}
             style={{ borderRadius: 8, border: '1px solid #e2eaf3', color: '#5a6a7e' }}
           >
-            返回
+            <span className="study-header-text">返回</span>
           </Button>
           <Text strong style={{ fontSize: 14, maxWidth: 200, color: '#1a2332' }} ellipsis={{ tooltip: doc.title }}>{doc.title}</Text>
           <span style={{
             padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 500,
             background: doc.status === 'ready' ? 'rgba(45,206,137,0.1)' : 'rgba(17,205,239,0.1)',
             color: doc.status === 'ready' ? '#2dce89' : '#11cdef',
+            whiteSpace: 'nowrap'
           }}>
             {doc.status === 'ready' ? '已就绪' : doc.status === 'processing' ? '处理中' : doc.status}
           </span>
@@ -1159,6 +1160,7 @@ export default function DocumentStudyPage() {
               padding: '2px 8px', borderRadius: 6, fontSize: 11,
               background: 'rgba(45,206,137,0.1)', color: '#2dce89',
               display: 'flex', alignItems: 'center', gap: 3,
+              whiteSpace: 'nowrap'
             }}>
               <GlobalOutlined style={{ fontSize: 10 }} /> 公开
             </span>
@@ -1218,8 +1220,8 @@ export default function DocumentStudyPage() {
                 {audioLoading
                   ? <Spin size="small" style={{ color: '#fff' }} />
                   : isPlaying
-                    ? <><PauseCircleOutlined style={{ fontSize: 18 }} /> 暂停</>
-                    : <><PlayCircleOutlined style={{ fontSize: 18 }} /> 播放</>
+                    ? <><PauseCircleOutlined style={{ fontSize: 18 }} /> <span className="study-header-text">暂停</span></>
+                    : <><PlayCircleOutlined style={{ fontSize: 18 }} /> <span className="study-header-text">播放</span></>
                 }
               </button>
 
@@ -1250,22 +1252,22 @@ export default function DocumentStudyPage() {
               />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>自动</Text>
+              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }} className="study-header-text">自动</Text>
               <Switch size="small" checked={autoPlayNext} onChange={setAutoPlayNext} />
             </div>
           </div>
         )}
 
-        <Space size={8}>
+        <Space size={8} style={{ flexShrink: 0 }}>
           {hasLecture && (
             <>
               <Tooltip title={showTranslation ? '隐藏译文' : '显示译文'}>
                 <Button size="small" type={showTranslation ? 'primary' : 'default'} icon={<TranslationOutlined />} onClick={() => setShowTranslation(!showTranslation)} />
               </Tooltip>
               {isPublished ? (
-                <Button size="small" icon={<StopOutlined />} danger onClick={handleUnpublish}>撤回</Button>
+                <Button size="small" icon={<StopOutlined />} danger onClick={handleUnpublish}><span className="study-header-text">撤回</span></Button>
               ) : (
-                <Button size="small" icon={<SendOutlined />} type="primary" ghost onClick={openPublishModal}>发布</Button>
+                <Button size="small" icon={<SendOutlined />} onClick={openPublishModal}><span className="study-header-text">发布</span></Button>
               )}
             </>
           )}
@@ -1288,18 +1290,18 @@ export default function DocumentStudyPage() {
               }}
               trigger={['click']}
             >
-              <Button size="small" icon={<ShareAltOutlined />}>分享图文</Button>
+              <Button size="small" icon={<ShareAltOutlined />}><span className="study-header-text">分享图文</span></Button>
             </Dropdown>
           )}
           {!hasLecture && hasPpt && (
             <Button size="small" type="primary" icon={<SoundOutlined />} loading={generating} onClick={handleGenerateLecture}>
-              {generating ? '生成中...' : '生成讲解'}
+              <span className="study-header-text">{generating ? '生成中...' : '生成讲解'}</span>
             </Button>
           )}
           <Tooltip title={rightPanelVisible ? '收起面板' : '展开面板'}>
             <Button size="small" icon={<MenuFoldOutlined />} onClick={() => setRightPanelVisible(v => !v)} />
           </Tooltip>
-          {hasLecture && <Text type="secondary">{currentPage + 1} / {totalPages}</Text>}
+          {hasLecture && <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{currentPage + 1} / {totalPages}</Text>}
         </Space>
       </div>
 
@@ -1323,10 +1325,10 @@ export default function DocumentStudyPage() {
       )}
 
       {/* Main body */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left nav — slide thumbnails (lecture mode) or doc meta (doc mode) */}
         {hasLecture ? (
-          <div ref={thumbnailListRef} style={{
+          <div ref={thumbnailListRef} className="study-left-panel" style={{
             width: 160, flexShrink: 0,
             borderRight: '1px solid rgba(226,234,243,0.6)',
             overflowY: 'auto', background: 'rgba(248,251,255,0.8)', padding: '8px 0',
@@ -1379,7 +1381,7 @@ export default function DocumentStudyPage() {
             })}
           </div>
         ) : (
-          <div style={{ width: 200, flexShrink: 0, borderRight: '1px solid #f0f0f0', overflowY: 'auto', background: '#fafafa', padding: 16 }}>
+          <div className="study-left-panel" style={{ width: 200, flexShrink: 0, borderRight: '1px solid #f0f0f0', overflowY: 'auto', background: '#fafafa', padding: 16 }}>
             <Text strong style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>文档信息</Text>
             <Space direction="vertical" size={8}>
               <Text type="secondary" style={{ fontSize: 12 }}><BookOutlined /> {doc.filename}</Text>
@@ -1392,7 +1394,7 @@ export default function DocumentStudyPage() {
         )}
 
         {/* Center content */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 32px', background: '#fcfeff' }}>
+        <div className="study-center-panel" style={{ flex: 1, overflowY: 'auto', padding: '24px 32px', background: '#fcfeff' }}>
           {hasLecture ? renderLectureContent() : renderDocContent()}
 
           {hasLecture && (
