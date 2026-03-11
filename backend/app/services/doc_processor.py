@@ -236,7 +236,7 @@ async def _generate_all_lectures(
     ppt_content: list[dict], page_texts: list[str], doc_id: int | None = None
 ) -> list[dict]:
     """为每页 PPT 并行生成讲解文本 + 翻译（场景图异步后台生成）"""
-    sem = asyncio.Semaphore(4)
+    sem = asyncio.Semaphore(2)  # 降低并发，防止大文档处理时内存压力过大
 
     async def _one_slide(idx: int, slide: dict) -> dict:
         async with sem:
@@ -286,7 +286,9 @@ async def _generate_all_lectures(
 
 async def _generate_all_slide_images(doc_id: int, slides: list[dict]) -> None:
     """后台为所有讲解页生成场景图，逐页写回数据库"""
-    sem = asyncio.Semaphore(2)  # 控制并发，避免万象 API 过载
+    # 等待 5 分钟再开始生成，避免与讲解生成/TTS 同时抢占资源
+    await asyncio.sleep(300)
+    sem = asyncio.Semaphore(1)  # 控制并发，一次只生成一张，避免内存爆炸
 
     async def _gen_one(idx: int, slide: dict) -> None:
         async with sem:

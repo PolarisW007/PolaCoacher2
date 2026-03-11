@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     DOC_IMAGES_DIR: Path = _PROJECT_ROOT / "data" / "doc_images"
     SLIDE_IMAGES_DIR: Path = _PROJECT_ROOT / "data" / "slide_images"
 
-    MAX_UPLOAD_SIZE_MB: int = 100
+    MAX_UPLOAD_SIZE_MB: int = 50
     ALLOWED_EXTENSIONS: set[str] = {"pdf", "docx", "txt", "md"}
 
     ROOT_PATH: str = ""
