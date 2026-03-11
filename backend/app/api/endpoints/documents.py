@@ -24,7 +24,8 @@ from app.schemas.document import (
     ImportUrlRequest,
     PublishRequest,
 )
-from app.services.doc_processor import generate_lecture_for_document, process_document
+from app.services.doc_processor import generate_lecture_for_document, process_document, _generate_all_slide_images
+from app.services.ai_service import generate_slide_scene_image
 
 router = APIRouter(prefix="/documents", tags=["文档"])
 
@@ -1147,6 +1148,46 @@ async def generate_lecture(
 
     asyncio.create_task(generate_lecture_for_document(doc_id))
     return ApiResponse.ok(msg="讲解生成已启动，请稍候")
+
+
+@router.post("/{doc_id}/generate-slide-images", response_model=ApiResponse)
+async def trigger_slide_images(
+    doc_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发所有讲解页的场景图生成（用于旧文档补生成）"""
+    doc = await _get_user_doc(doc_id, user.id, db)
+    if not doc.lecture_slides:
+        raise HTTPException(status_code=400, detail="请先生成讲解")
+    asyncio.create_task(_generate_all_slide_images(doc_id, doc.lecture_slides))
+    return ApiResponse.ok(msg=f"已触发 {len(doc.lecture_slides)} 页场景图生成")
+
+
+@router.post("/{doc_id}/slide/{slide_idx}/generate-image", response_model=ApiResponse)
+async def trigger_single_slide_image(
+    doc_id: int,
+    slide_idx: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发单页场景图生成，实时返回 URL"""
+    doc = await _get_user_doc(doc_id, user.id, db)
+    if not doc.lecture_slides or slide_idx >= len(doc.lecture_slides):
+        raise HTTPException(status_code=400, detail="页码超出范围")
+    slide = doc.lecture_slides[slide_idx]
+    url = await generate_slide_scene_image(
+        doc_id, slide_idx,
+        slide.get("title", ""),
+        slide.get("points", []),
+        slide.get("lecture_text", ""),
+    )
+    if url:
+        slides = list(doc.lecture_slides)
+        slides[slide_idx] = {**slides[slide_idx], "scene_image_url": url}
+        doc.lecture_slides = slides
+        await db.commit()
+    return ApiResponse.ok(data={"scene_image_url": url})
 
 
 @router.get("/{doc_id}/file-url")

@@ -128,9 +128,11 @@ _upload_dir = _base / "data" / "uploads"
 _audio_dir = _base / "data" / "audio"
 _cover_dir = _base / "data" / "covers"
 _doc_images_dir = _base / "data" / "doc_images"
-for _d in (_upload_dir, _audio_dir, _cover_dir, _doc_images_dir):
+_slide_images_dir = _base / "data" / "slide_images"
+for _d in (_upload_dir, _audio_dir, _cover_dir, _doc_images_dir, _slide_images_dir):
     _d.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_upload_dir)), name="uploads")
 app.mount("/audio", StaticFiles(directory=str(_audio_dir)), name="audio")
 app.mount("/covers", StaticFiles(directory=str(_cover_dir)), name="covers")
 app.mount("/doc_images", StaticFiles(directory=str(_doc_images_dir)), name="doc_images")
+app.mount("/slide_images", StaticFiles(directory=str(_slide_images_dir)), name="slide_images")

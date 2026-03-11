@@ -241,42 +241,151 @@ async def generate_image_prompt(title: str, summary: str, key_points: list[str],
     return cleaned
 
 
-async def generate_cover_image(prompt: str, save_dir: str, filename: str) -> str | None:
-    """使用通义万象生成封面图"""
+async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix: str, size: str = "1024*576") -> str | None:
+    """通用通义万象图片生成，返回持久化 URL 路径"""
     if not settings.DASHSCOPE_API_KEY:
-        logger.warning("DASHSCOPE_API_KEY 未配置，跳过封面图生成")
+        logger.warning("DASHSCOPE_API_KEY 未配置，跳过图片生成")
         return None
-
     try:
         import dashscope
         from dashscope import ImageSynthesis
         from pathlib import Path
 
         dashscope.api_key = settings.DASHSCOPE_API_KEY
-
         rsp = await asyncio.to_thread(
             ImageSynthesis.call,
             model="wanx2.1-t2i-turbo",
             prompt=prompt,
             n=1,
-            size="1024*1024",
+            size=size,
         )
-
         if rsp.status_code == 200 and rsp.output and rsp.output.results:
             image_url = rsp.output.results[0].url
             save_path = Path(save_dir)
             save_path.mkdir(parents=True, exist_ok=True)
             filepath = save_path / filename
-
             async with httpx.AsyncClient(timeout=60) as client:
                 img_resp = await client.get(image_url)
                 img_resp.raise_for_status()
                 filepath.write_bytes(img_resp.content)
-
-            return f"/covers/{filename}"
+            return f"{url_prefix}/{filename}"
         else:
-            logger.warning(f"通义万象图片生成失败: {rsp.message if hasattr(rsp, 'message') else 'unknown'}")
+            logger.warning(f"通义万象图片生成失败: {getattr(rsp, 'message', 'unknown')}")
             return None
     except Exception as e:
-        logger.error(f"封面图生成异常: {e}")
+        logger.error(f"图片生成异常: {e}")
         return None
+
+
+async def generate_cover_image(prompt: str, save_dir: str, filename: str) -> str | None:
+    """使用通义万象生成封面图"""
+    return await _call_wanx_image(prompt, save_dir, filename, "/covers", size="1024*1024")
+
+
+# ──────────────────────────────────────────────
+# 讲解场景图：分类 → 生成 prompt → 生成图片
+# ──────────────────────────────────────────────
+
+# 学术/理工判断关键词
+_ACADEMIC_KEYWORDS = {
+    "算法", "数学", "物理", "化学", "公式", "定理", "逻辑",
+    "机器学习", "深度学习", "神经网络", "矩阵", "向量", "微积分",
+    "函数", "统计", "概率", "数据结构", "计算机", "编程", "代码",
+    "architecture", "algorithm", "theorem", "formula", "network",
+    "transformer", "gradient", "tensor", "graph", "complexity",
+    "论文", "研究", "实验", "模型", "框架", "优化", "训练",
+}
+
+
+def classify_slide_style(title: str, points: list[str], lecture_text: str) -> str:
+    """判断页面风格：'academic'（赛博朋克结构图）或 'narrative'（3D吉卜力风）"""
+    combined = (title + " " + " ".join(points) + " " + lecture_text[:300]).lower()
+    score = sum(1 for kw in _ACADEMIC_KEYWORDS if kw.lower() in combined)
+    return "academic" if score >= 2 else "narrative"
+
+
+async def generate_slide_scene_prompt(
+    title: str,
+    points: list[str],
+    lecture_text: str,
+    style: str,
+) -> str:
+    """根据风格生成场景图的英文绘画提示词"""
+    points_str = "、".join(points[:4]) if points else title
+    text_snippet = lecture_text[:400]
+
+    if style == "academic":
+        system_prompt = (
+            "You are a cyberpunk technical illustration prompt engineer. "
+            "Create vivid, detailed English prompts for structure diagrams in cyberpunk style. "
+            "Output ONLY the English prompt, no explanations, max 120 words."
+        )
+        user_prompt = (
+            f"Create a cyberpunk-style structural diagram illustration prompt for the concept:\n"
+            f"Title: {title}\nKey points: {points_str}\nContext: {text_snippet[:200]}\n\n"
+            f"Requirements: neon glowing circuit diagrams, holographic data flows, dark background with electric blue/purple/cyan accents, "
+            f"geometric nodes and connections representing the concept, floating mathematical symbols, futuristic lab aesthetic. "
+            f"The image should visually explain the structure or process described."
+        )
+    else:
+        system_prompt = (
+            "You are a Studio Ghibli 3D animation scene prompt engineer. "
+            "Create warm, detailed English prompts for narrative scenes in Ghibli 3D style. "
+            "Output ONLY the English prompt, no explanations, max 120 words."
+        )
+        user_prompt = (
+            f"Create a Studio Ghibli 3D style scene illustration prompt for this narrative content:\n"
+            f"Title: {title}\nKey points: {points_str}\nContext: {text_snippet[:200]}\n\n"
+            f"Requirements: warm sunlight, lush natural environments, whimsical magical details, "
+            f"3D rendered in Ghibli aesthetic (like Howl's Moving Castle / Spirited Away style), "
+            f"soft color palette, intricate background details, characters or symbolic objects that represent the story/concept. "
+            f"Cinematic wide shot, high quality 3D render."
+        )
+
+    result = await _call_qwen(
+        user_prompt,
+        system=system_prompt,
+        temperature=0.85,
+        max_tokens=200,
+    )
+    cleaned = result.strip().strip('"').strip("'")
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return cleaned
+
+
+async def generate_slide_scene_image(
+    doc_id: int,
+    slide_idx: int,
+    title: str,
+    points: list[str],
+    lecture_text: str,
+) -> str | None:
+    """
+    为单页讲解生成场景图：自动分类风格 → 生成 prompt → 调用万象 API → 持久化
+    返回图片 URL（如 /slide_images/doc_2_slide_0.png），失败返回 None
+    """
+    from pathlib import Path
+
+    filename = f"doc_{doc_id}_slide_{slide_idx}.png"
+    filepath = settings.SLIDE_IMAGES_DIR / filename
+
+    # 已有则直接返回
+    if filepath.exists() and filepath.stat().st_size > 1000:
+        logger.info(f"[Doc {doc_id}] Slide {slide_idx} 场景图已存在，复用")
+        return f"/slide_images/{filename}"
+
+    style = classify_slide_style(title, points, lecture_text)
+    logger.info(f"[Doc {doc_id}] Slide {slide_idx} 场景图风格: {style}")
+
+    img_prompt = await generate_slide_scene_prompt(title, points, lecture_text, style)
+    logger.info(f"[Doc {doc_id}] Slide {slide_idx} prompt: {img_prompt[:80]}...")
+
+    url = await _call_wanx_image(
+        img_prompt,
+        str(settings.SLIDE_IMAGES_DIR),
+        filename,
+        "/slide_images",
+        size="1024*576",  # 16:9 横幅场景图
+    )
+    return url

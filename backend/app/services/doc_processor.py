@@ -9,10 +9,12 @@ from sqlalchemy import select
 from app.core.database import async_session_factory
 from app.models.document import Document
 from app.services.ai_service import (
+    classify_slide_style,
     extract_key_points,
     generate_cover_image,
     generate_lecture_text,
     generate_ppt_content,
+    generate_slide_scene_image,
     generate_summary,
     translate_text,
 )
@@ -150,7 +152,7 @@ async def process_document(doc_id: int) -> None:
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本")
-            slides = await _generate_all_lectures(ppt_content, page_texts)
+            slides = await _generate_all_lectures(ppt_content, page_texts, doc_id=doc_id)
             doc.lecture_slides = slides
             doc.progress = 100.0
             doc.status = "ready"
@@ -196,7 +198,7 @@ async def generate_lecture_for_document(doc_id: int) -> None:
                 extract_text, doc.file_path, doc.file_type
             )
 
-            slides = await _generate_all_lectures(doc.ppt_content, page_texts)
+            slides = await _generate_all_lectures(doc.ppt_content, page_texts, doc_id=doc_id)
             doc.lecture_slides = slides
             doc.progress = 100.0
             doc.status = "ready"
@@ -231,9 +233,9 @@ async def _pregenerate_audio(doc_id: int, num_pages: int) -> None:
 
 
 async def _generate_all_lectures(
-    ppt_content: list[dict], page_texts: list[str]
+    ppt_content: list[dict], page_texts: list[str], doc_id: int | None = None
 ) -> list[dict]:
-    """为每页 PPT 并行生成讲解文本 + 翻译"""
+    """为每页 PPT 并行生成讲解文本 + 翻译（场景图异步后台生成）"""
     sem = asyncio.Semaphore(4)
 
     async def _one_slide(idx: int, slide: dict) -> dict:
@@ -241,13 +243,18 @@ async def _generate_all_lectures(
             page_text = page_texts[idx] if idx < len(page_texts) else ""
             lecture = await generate_lecture_text(slide, page_text)
             translation = await translate_text(lecture, "zh", "en")
+            title = slide.get("title", f"第 {idx + 1} 页")
+            points = slide.get("points", [])
+            style = classify_slide_style(title, points, lecture)
             return {
                 "slide": idx + 1,
-                "title": slide.get("title", f"第 {idx + 1} 页"),
-                "points": slide.get("points", []),
+                "title": title,
+                "points": points,
                 "lecture_text": lecture,
                 "translation": translation,
                 "page_text": page_text[:500],
+                "scene_style": style,
+                "scene_image_url": None,  # 图片异步后台生成后写入
             }
 
     tasks = [_one_slide(i, s) for i, s in enumerate(ppt_content)]
@@ -264,10 +271,56 @@ async def _generate_all_lectures(
                 "lecture_text": "讲解生成失败，请重试。",
                 "translation": "",
                 "page_text": "",
+                "scene_style": "narrative",
+                "scene_image_url": None,
             })
         else:
             slides.append(r)
+
+    # 触发场景图后台生成（不阻塞讲解返回）
+    if doc_id is not None:
+        asyncio.create_task(_generate_all_slide_images(doc_id, slides))
+
     return slides
+
+
+async def _generate_all_slide_images(doc_id: int, slides: list[dict]) -> None:
+    """后台为所有讲解页生成场景图，逐页写回数据库"""
+    sem = asyncio.Semaphore(2)  # 控制并发，避免万象 API 过载
+
+    async def _gen_one(idx: int, slide: dict) -> None:
+        async with sem:
+            title = slide.get("title", "")
+            points = slide.get("points", [])
+            lecture_text = slide.get("lecture_text", "")
+            try:
+                url = await generate_slide_scene_image(doc_id, idx, title, points, lecture_text)
+                if url:
+                    await _write_slide_image_url(doc_id, idx, url)
+            except Exception as e:
+                logger.error(f"[Doc {doc_id}] Slide {idx} 场景图生成失败: {e}")
+
+    logger.info(f"[Doc {doc_id}] 开始后台生成 {len(slides)} 张场景图")
+    await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(slides)])
+    logger.info(f"[Doc {doc_id}] 全部场景图生成完成")
+
+
+async def _write_slide_image_url(doc_id: int, slide_idx: int, url: str) -> None:
+    """将生成好的场景图 URL 写回 lecture_slides[slide_idx].scene_image_url"""
+    async with async_session_factory() as db:
+        try:
+            result = await db.execute(select(Document).where(Document.id == doc_id))
+            doc = result.scalar_one_or_none()
+            if not doc or not doc.lecture_slides:
+                return
+            slides = list(doc.lecture_slides)
+            if slide_idx < len(slides):
+                slides[slide_idx] = {**slides[slide_idx], "scene_image_url": url}
+                doc.lecture_slides = slides
+                await db.commit()
+                logger.info(f"[Doc {doc_id}] Slide {slide_idx} 场景图 URL 已写入: {url}")
+        except Exception as e:
+            logger.error(f"[Doc {doc_id}] 写入场景图 URL 失败: {e}")
 
 
 async def _extract_and_translate(doc_id: int, file_path: str, file_type: str) -> None:

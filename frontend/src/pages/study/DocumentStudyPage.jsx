@@ -194,6 +194,29 @@ export default function DocumentStudyPage() {
   const hasLecture = slides.length > 0;
   const slide = slides[currentPage] || {};
   const sentences = useMemo(() => splitSentences(slide.lecture_text), [slide.lecture_text]);
+
+  // 场景图轮询：当前页没有图时，后台轮询直到有图
+  const sceneImageUrl = slide.scene_image_url || null;
+  const sceneImagePollerRef = useRef(null);
+  useEffect(() => {
+    if (sceneImagePollerRef.current) clearInterval(sceneImagePollerRef.current);
+    if (sceneImageUrl || !hasLecture) return;
+    let tries = 0;
+    sceneImagePollerRef.current = setInterval(async () => {
+      tries++;
+      try {
+        const res = await docApi.get(id);
+        const freshSlides = res.data?.lecture_slides || [];
+        if (freshSlides[currentPage]?.scene_image_url) {
+          setDoc(res.data);
+          clearInterval(sceneImagePollerRef.current);
+        }
+      } catch { /* silent */ }
+      if (tries >= 30) clearInterval(sceneImagePollerRef.current);
+    }, 4000);
+    return () => clearInterval(sceneImagePollerRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, sceneImageUrl, hasLecture]);
   const isProcessing = doc?.status === 'processing' || doc?.status === 'pending';
   const hasPpt = doc?.ppt_content && doc.ppt_content.length > 0;
   const isPublished = doc?.lecture_visibility === 'public' || doc?.is_published;
@@ -819,121 +842,169 @@ export default function DocumentStudyPage() {
 
   if (!doc) return <Empty description="文档不存在" />;
 
-  const renderLectureContent = () => (
-    <>
-      <div style={{ marginBottom: 20 }}>
-        <Tag color="blue" style={{ marginBottom: 8 }}>
-          第 {slide.slide || currentPage + 1} 页
-        </Tag>
-        <Title level={3} style={{ margin: 0 }}>{slide.title}</Title>
-      </div>
+  const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, '');
 
-      {slide.points && slide.points.length > 0 && (
-        <div style={{
-          marginBottom: 18, borderRadius: 12,
-          background: 'linear-gradient(135deg, rgba(45,206,137,0.06) 0%, rgba(17,205,239,0.04) 100%)',
-          border: '1px solid rgba(45,206,137,0.2)',
-          padding: '12px 16px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, color: '#2dce89', fontWeight: 600, fontSize: 13 }}>
-            <BulbOutlined /> 核心要点
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {slide.points.map((p, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <span style={{
-                  width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
-                  background: 'linear-gradient(135deg, #2dce89, #11cdef)',
-                  color: '#fff', fontSize: 10, fontWeight: 700,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  marginTop: 2,
-                }}>
-                  {i + 1}
-                </span>
-                <span style={{ fontSize: 13.5, lineHeight: 1.65, color: '#2d3748' }}>{p}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div style={{
-        marginBottom: 18, borderRadius: 12,
-        background: '#fff',
-        border: '1px solid rgba(226,234,243,0.8)',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
-        overflow: 'hidden',
-      }}>
-        <div style={{
-          padding: '10px 16px', background: 'rgba(240,244,248,0.5)',
-          borderBottom: '1px solid rgba(226,234,243,0.6)',
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          <BookOutlined style={{ color: '#2dce89', fontSize: 14 }} />
-          <Text strong style={{ fontSize: 13, color: '#1a2332' }}>AI 讲解</Text>
-          {isPlaying && (
-            <span style={{
-              padding: '1px 8px', borderRadius: 10, fontSize: 11,
-              background: 'rgba(17,205,239,0.1)', color: '#11cdef',
-              display: 'flex', alignItems: 'center', gap: 3,
+  const renderSceneImage = () => {
+    const isAcademic = slide.scene_style === 'academic';
+    if (sceneImageUrl) {
+      return (
+        <div className="scene-image-wrap">
+          <img
+            src={`${BASE_URL}${sceneImageUrl}`}
+            alt={slide.title}
+            className="scene-image"
+            onError={e => { e.target.parentElement.classList.add('scene-image-fallback'); }}
+          />
+          <div className="scene-image-overlay">
+            <div className="scene-badge" style={{
+              background: isAcademic
+                ? 'linear-gradient(135deg, rgba(0,212,255,0.9), rgba(111,0,255,0.9))'
+                : 'linear-gradient(135deg, rgba(255,183,77,0.9), rgba(255,87,34,0.7))',
             }}>
-              <SoundOutlined style={{ fontSize: 10 }} /> 播放中
-            </span>
-          )}
+              {isAcademic ? '⚡ 赛博朋克' : '🌿 吉卜力'}
+            </div>
+            <div className="scene-title-overlay">
+              <span style={{ fontSize: 12, opacity: 0.75 }}>第 {slide.slide || currentPage + 1} 页</span>
+              <span className="scene-main-title">{slide.title}</span>
+            </div>
+          </div>
         </div>
-        <div style={{ padding: '14px 16px' }}>
-          {sentences.length > 0 ? (
-            <div style={{ fontSize: 15, lineHeight: 2, color: '#2d3748' }}>
-              {sentences.map((sentence, idx) => (
-                <span
-                  key={idx}
-                  style={{
-                    backgroundColor: idx === currentSentenceIdx ? 'rgba(45,206,137,0.18)' : 'transparent',
-                    borderRadius: idx === currentSentenceIdx ? 4 : 0,
-                    padding: idx === currentSentenceIdx ? '2px 2px' : 0,
-                    transition: 'background-color 0.3s ease',
-                  }}
-                >
-                  {sentence}
-                </span>
+      );
+    }
+    return (
+      <div className="scene-image-wrap scene-image-loading">
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%',
+          background: isAcademic
+            ? 'linear-gradient(135deg, #0f0c29, #302b63, #24243e)'
+            : 'linear-gradient(135deg, #134e5e, #71b280)',
+        }}>
+          <Spin size="default" style={{ color: '#fff' }} />
+          <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 10 }}>
+            {isAcademic ? '⚡ 赛博朋克场景图生成中...' : '🌿 吉卜力场景图生成中...'}
+          </div>
+          <div style={{ marginTop: 12, color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>
+            第 {slide.slide || currentPage + 1} 页 · {slide.title}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderLectureContent = () => (
+    <div className="lecture-layout">
+      {/* 场景图区域 */}
+      {renderSceneImage()}
+
+      {/* 文字内容区 */}
+      <div className="lecture-text-area">
+        {slide.points && slide.points.length > 0 && (
+          <div style={{
+            marginBottom: 16, borderRadius: 12,
+            background: 'linear-gradient(135deg, rgba(45,206,137,0.06) 0%, rgba(17,205,239,0.04) 100%)',
+            border: '1px solid rgba(45,206,137,0.2)',
+            padding: '12px 16px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, color: '#2dce89', fontWeight: 600, fontSize: 13 }}>
+              <BulbOutlined /> 核心要点
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {slide.points.map((p, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <span style={{
+                    width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                    background: 'linear-gradient(135deg, #2dce89, #11cdef)',
+                    color: '#fff', fontSize: 10, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    marginTop: 2,
+                  }}>
+                    {i + 1}
+                  </span>
+                  <span style={{ fontSize: 13.5, lineHeight: 1.65, color: '#2d3748' }}>{p}</span>
+                </div>
               ))}
             </div>
-          ) : (
-            <Paragraph style={{ fontSize: 15, lineHeight: 2, whiteSpace: 'pre-wrap', color: '#2d3748', margin: 0 }}>
-              {slide.lecture_text || '暂无讲解内容'}
-            </Paragraph>
-          )}
-        </div>
-      </div>
-
-      {showTranslation && slide.translation && (
-        <div style={{
-          marginBottom: 18, borderRadius: 12,
-          background: 'rgba(251,99,64,0.04)',
-          border: '1px solid rgba(251,99,64,0.15)',
-          padding: '12px 16px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: '#fb6340', fontWeight: 600, fontSize: 13 }}>
-            <TranslationOutlined /> Translation
           </div>
-          <Paragraph style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#5a6a7e', fontStyle: 'italic', margin: 0 }}>
-            {slide.translation}
-          </Paragraph>
-        </div>
-      )}
+        )}
 
-      {slide.page_text && (
         <div style={{
-          borderRadius: 12,
-          background: 'rgba(240,244,248,0.6)',
-          border: '1px solid rgba(226,234,243,0.6)',
-          padding: '12px 16px', marginBottom: 18,
+          marginBottom: 16, borderRadius: 12,
+          background: '#fff',
+          border: '1px solid rgba(226,234,243,0.8)',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+          overflow: 'hidden',
         }}>
-          <div style={{ fontSize: 11, color: '#aab4be', marginBottom: 6, fontWeight: 500, letterSpacing: '0.5px', textTransform: 'uppercase' }}>原文摘录</div>
-          <Text style={{ fontSize: 13, lineHeight: 1.65, color: '#8896a8' }}>{slide.page_text}</Text>
+          <div style={{
+            padding: '10px 16px', background: 'rgba(240,244,248,0.5)',
+            borderBottom: '1px solid rgba(226,234,243,0.6)',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <BookOutlined style={{ color: '#2dce89', fontSize: 14 }} />
+            <Text strong style={{ fontSize: 13, color: '#1a2332' }}>AI 讲解</Text>
+            {isPlaying && (
+              <span style={{
+                padding: '1px 8px', borderRadius: 10, fontSize: 11,
+                background: 'rgba(17,205,239,0.1)', color: '#11cdef',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}>
+                <SoundOutlined style={{ fontSize: 10 }} /> 播放中
+              </span>
+            )}
+          </div>
+          <div style={{ padding: '14px 16px' }}>
+            {sentences.length > 0 ? (
+              <div style={{ fontSize: 15, lineHeight: 2, color: '#2d3748' }}>
+                {sentences.map((sentence, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      backgroundColor: idx === currentSentenceIdx ? 'rgba(45,206,137,0.18)' : 'transparent',
+                      borderRadius: idx === currentSentenceIdx ? 4 : 0,
+                      padding: idx === currentSentenceIdx ? '2px 2px' : 0,
+                      transition: 'background-color 0.3s ease',
+                    }}
+                  >
+                    {sentence}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <Paragraph style={{ fontSize: 15, lineHeight: 2, whiteSpace: 'pre-wrap', color: '#2d3748', margin: 0 }}>
+                {slide.lecture_text || '暂无讲解内容'}
+              </Paragraph>
+            )}
+          </div>
         </div>
-      )}
-    </>
+
+        {showTranslation && slide.translation && (
+          <div style={{
+            marginBottom: 16, borderRadius: 12,
+            background: 'rgba(251,99,64,0.04)',
+            border: '1px solid rgba(251,99,64,0.15)',
+            padding: '12px 16px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: '#fb6340', fontWeight: 600, fontSize: 13 }}>
+              <TranslationOutlined /> Translation
+            </div>
+            <Paragraph style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#5a6a7e', fontStyle: 'italic', margin: 0 }}>
+              {slide.translation}
+            </Paragraph>
+          </div>
+        )}
+
+        {slide.page_text && (
+          <div style={{
+            borderRadius: 12,
+            background: 'rgba(240,244,248,0.6)',
+            border: '1px solid rgba(226,234,243,0.6)',
+            padding: '12px 16px', marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 11, color: '#aab4be', marginBottom: 6, fontWeight: 500, letterSpacing: '0.5px', textTransform: 'uppercase' }}>原文摘录</div>
+            <Text style={{ fontSize: 13, lineHeight: 1.65, color: '#8896a8' }}>{slide.page_text}</Text>
+          </div>
+        )}
+      </div>
+    </div>
   );
 
   const renderDocContent = () => (
@@ -1148,6 +1219,102 @@ export default function DocumentStudyPage() {
   return (
     <div ref={containerRef} style={{ height: isFullscreen ? '100vh' : 'calc(100vh - 60px)', width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
       <style>{`
+        /* ── 场景图样式 ── */
+        .lecture-layout {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+
+        /* 场景图容器 */
+        .scene-image-wrap {
+          position: relative;
+          width: 100%;
+          border-radius: 16px;
+          overflow: hidden;
+          margin-bottom: 20px;
+          aspect-ratio: 16 / 9;
+          background: #0f0c29;
+          flex-shrink: 0;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+        .scene-image {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+          transition: transform 0.4s ease;
+        }
+        .scene-image-wrap:hover .scene-image {
+          transform: scale(1.02);
+        }
+        .scene-image-overlay {
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(
+            to bottom,
+            transparent 40%,
+            rgba(0,0,0,0.55) 100%
+          );
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          padding: 14px 16px;
+          pointer-events: none;
+        }
+        .scene-badge {
+          align-self: flex-start;
+          padding: 3px 10px;
+          border-radius: 20px;
+          font-size: 11px;
+          color: #fff;
+          font-weight: 600;
+          backdrop-filter: blur(4px);
+          letter-spacing: 0.3px;
+        }
+        .scene-title-overlay {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          color: #fff;
+        }
+        .scene-main-title {
+          font-size: 16px;
+          font-weight: 700;
+          line-height: 1.3;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+        }
+        .scene-image-loading {
+          min-height: 180px;
+        }
+        .lecture-text-area {
+          flex: 1;
+        }
+
+        /* ── 横屏（宽屏）：图在左，文字在右 ── */
+        @media (min-width: 900px) {
+          .lecture-layout {
+            flex-direction: row;
+            gap: 24px;
+            align-items: flex-start;
+          }
+          .scene-image-wrap {
+            width: 42%;
+            aspect-ratio: unset;
+            height: 100%;
+            min-height: 260px;
+            max-height: 520px;
+            position: sticky;
+            top: 0;
+            margin-bottom: 0;
+          }
+          .lecture-text-area {
+            width: 58%;
+            overflow-y: auto;
+          }
+        }
+
+        /* ── 移动端竖屏 ── */
         @media (max-width: 768px) {
           .study-header-text { display: none !important; }
           .study-hide-mobile { display: none !important; }
@@ -1155,20 +1322,27 @@ export default function DocumentStudyPage() {
           .study-header .ant-space { gap: 4px !important; }
           .study-left-panel { display: none !important; }
           .study-right-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; box-shadow: -2px 0 12px rgba(0,0,0,0.1); width: 85% !important; max-width: 320px; }
-          .study-center-panel { padding: 12px 16px !important; }
+          .study-center-panel { padding: 10px 12px !important; }
           .study-header .playback-bar { gap: 4px !important; }
-          .study-header .playback-bar button { padding-inline: 12px !important; height: 32px !important; }
+          .scene-image-wrap { border-radius: 12px; margin-bottom: 14px; }
+          .scene-main-title { font-size: 13px; }
         }
+
+        /* ── 移动端横屏：图在左，文在右，更紧凑 ── */
         @media (max-width: 900px) and (orientation: landscape) {
-          .study-left-panel { width: 64px !important; }
+          .study-left-panel { width: 56px !important; }
           .study-left-panel .ant-badge { min-width: 20px !important; height: 20px !important; line-height: 20px !important; font-size: 10px !important; }
           .study-left-panel .ant-typography { display: none !important; }
           .study-left-panel .anticon-check-circle { position: absolute; right: 4px; bottom: 4px; font-size: 10px !important; }
           .study-header-text { display: none !important; }
           .study-hide-mobile { display: none !important; }
-          .study-center-panel { padding: 16px 24px !important; }
+          .study-center-panel { padding: 10px 12px !important; }
           .study-header { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
           .study-header::-webkit-scrollbar { display: none; }
+          .lecture-layout { flex-direction: row; gap: 14px; }
+          .scene-image-wrap { width: 40%; min-height: 160px; height: auto; aspect-ratio: 16/9; position: static; margin-bottom: 0; border-radius: 10px; }
+          .lecture-text-area { width: 60%; }
+          .scene-main-title { font-size: 12px; }
         }
       `}</style>
       {/* Top control bar */}
