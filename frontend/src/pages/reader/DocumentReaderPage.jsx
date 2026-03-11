@@ -721,6 +721,56 @@ export default function DocumentReaderPage() {
 
       {/* 右：工具区 */}
       <Space size={4} style={{ flexShrink: 0 }}>
+        {/* 原文切换按钮 */}
+        {doc?.file_path && (() => {
+          const ft = doc.file_type?.toLowerCase();
+          if (ft === 'pdf') {
+            return (
+              <Tooltip title={mainView === 'pdf' ? '切换为 AI 解析文本' : '查看原始 PDF'}>
+                <Button
+                  type={mainView === 'pdf' ? 'primary' : 'text'}
+                  size="small"
+                  icon={<FilePdfOutlined />}
+                  style={{ color: mainView === 'pdf' ? undefined : bgConfig.text }}
+                  onClick={() => setMainView((v) => v === 'pdf' ? 'text' : 'pdf')}
+                >
+                  原文
+                </Button>
+              </Tooltip>
+            );
+          }
+          if (ft === 'txt' || ft === 'md') {
+            return (
+              <Tooltip title={mainView === 'pdf' ? '切换为 AI 解析文本' : '查看原始文件'}>
+                <Button
+                  type={mainView === 'pdf' ? 'primary' : 'text'}
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  style={{ color: mainView === 'pdf' ? undefined : bgConfig.text }}
+                  onClick={() => setMainView((v) => v === 'pdf' ? 'text' : 'pdf')}
+                >
+                  原文
+                </Button>
+              </Tooltip>
+            );
+          }
+          if (ft === 'docx' || ft === 'doc') {
+            return (
+              <Tooltip title="下载原始 Word 文件">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  style={{ color: bgConfig.text }}
+                  onClick={() => window.open(docApi.getPdf(id), '_blank')}
+                >
+                  原文
+                </Button>
+              </Tooltip>
+            );
+          }
+          return null;
+        })()}
         {/* 全屏按钮 */}
         <Tooltip title={isFullscreen ? "退出全屏" : "全屏阅读"}>
           <Button
@@ -1540,6 +1590,36 @@ export default function DocumentReaderPage() {
   }
 
   const pdfUrl = docApi.getPdf(id);
+  const docFileType = doc?.file_type?.toLowerCase();
+
+  const renderOriginalView = () => {
+    if (docFileType === 'pdf') {
+      return (
+        <PdfViewer
+          url={pdfUrl}
+          height="100%"
+          filename={`${doc.title}.pdf`}
+          onPageChange={setPdfPage}
+          onTotalPages={setPdfTotal}
+          onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
+        />
+      );
+    }
+    if (docFileType === 'txt' || docFileType === 'md') {
+      const token = localStorage.getItem('token');
+      const rawUrl = `${pdfUrl}${pdfUrl.includes('?') ? '&' : '?'}token=${token}`;
+      return (
+        <iframe
+          src={rawUrl}
+          title="原始文件"
+          style={{ flex: 1, border: 'none', width: '100%', height: '100%',
+            background: docFileType === 'md' ? '#fff' : '#1a1a1a',
+            color: '#e8e8e8' }}
+        />
+      );
+    }
+    return null;
+  };
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
@@ -1551,16 +1631,7 @@ export default function DocumentReaderPage() {
 
         {/* 主内容 */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-          {mainView === 'text' ? renderTextView() : (
-            <PdfViewer
-              url={pdfUrl}
-              height="100%"
-              filename={`${doc.title}.pdf`}
-              onPageChange={setPdfPage}
-              onTotalPages={setPdfTotal}
-              onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
-            />
-          )}
+          {mainView === 'text' ? renderTextView() : renderOriginalView()}
           {renderPdfBar()}
         </div>
 
