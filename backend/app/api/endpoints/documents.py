@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from math import ceil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -28,6 +29,43 @@ from app.services.doc_processor import generate_lecture_for_document, process_do
 from app.services.ai_service import generate_slide_scene_image
 
 router = APIRouter(prefix="/documents", tags=["文档"])
+
+# 流式写磁盘：每次从 UploadFile 读取 CHUNK_SIZE，写入目标文件，避免整个文件驻留内存
+_CHUNK_SIZE = settings.CHUNK_SIZE_MB * 1024 * 1024  # 50 MB per chunk
+_MAX_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024  # 200 MB hard limit
+
+
+async def _stream_to_disk(upload_file: UploadFile, dest: Path) -> int:
+    """
+    将 UploadFile 以流式分块方式写入 dest，返回实际写入字节数。
+    每次读取 _CHUNK_SIZE 字节，一边读一边写，内存中最多保留一个 chunk。
+    若总字节数超过 _MAX_BYTES 抛出 413 HTTPException。
+    """
+    total = 0
+    loop = asyncio.get_event_loop()
+    try:
+        with dest.open("wb") as f:
+            while True:
+                chunk = await upload_file.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_BYTES:
+                    # 超限：立即删除临时文件
+                    f.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件大小超过最大限制 {settings.MAX_UPLOAD_SIZE_MB} MB",
+                    )
+                # 异步写入：避免阻塞事件循环
+                await loop.run_in_executor(None, f.write, chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"文件写入失败: {e}")
+    return total
 
 
 def _allowed_ext(filename: str) -> bool:
@@ -520,22 +558,46 @@ async def _download_and_process_pdf(
                     )
             else:
                 _log.info(f"[BookImport] 直接下载: url={t.download_url}")
+                # 流式下载，避免超大书籍撑爆内存
+                _chunk = settings.CHUNK_SIZE_MB * 1024 * 1024
+                _max = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+                _total = 0
+                _header_bytes = b""
+                import asyncio as _aio
+                _loop = _aio.get_event_loop()
                 async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
-                    resp = await client.get(t.download_url, headers={"User-Agent": _ua})
-                    resp.raise_for_status()
-                    content = resp.content
+                    async with client.stream("GET", t.download_url, headers={"User-Agent": _ua}) as resp:
+                        resp.raise_for_status()
+                        with open(file_path, "wb") as f:
+                            async for _ck in resp.aiter_bytes(_chunk):
+                                if not _header_bytes and len(_ck) >= 5:
+                                    _header_bytes = _ck[:5]
+                                _total += len(_ck)
+                                if _total > _max:
+                                    file_path.unlink(missing_ok=True)
+                                    raise ValueError(f"书籍文件超过大小限制 {settings.MAX_UPLOAD_SIZE_MB} MB")
+                                await _loop.run_in_executor(None, f.write, _ck)
+                content = None  # 已写磁盘，不再需要内存中的 content
 
-            if not content[:5].startswith(b"%PDF"):
-                raise ValueError(
-                    f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，size: {len(content)}）"
-                )
+            if content is not None:
+                # md5 下载方式仍返回 bytes，走原有验证逻辑
+                if not content[:5].startswith(b"%PDF"):
+                    raise ValueError(
+                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，size: {len(content)}）"
+                    )
+                with open(file_path, "wb") as f:
+                    f.write(content)
+                file_size = len(content)
+            else:
+                # 流式下载：用已读取的头部验证 PDF 格式
+                if _header_bytes and not _header_bytes.startswith(b"%PDF"):
+                    file_path.unlink(missing_ok=True)
+                    raise ValueError(f"文件头不是 PDF 格式（前5字节: {_header_bytes!r}）")
+                file_size = _total
 
-            with open(file_path, "wb") as f:
-                f.write(content)
-
-            _log.info(f"[BookImport] 下载完成: task={task_id}, size={len(content)}, path={file_path}")
+            _log.info(f"[BookImport] 下载完成: task={task_id}, size={file_size}, path={file_path}")
             d.file_path = str(file_path)
-            d.file_size = len(content)
+            d.file_size = file_size
             d.status = "pending"
             t.status = "processing"
             t.progress = 50
@@ -712,23 +774,35 @@ async def import_url(
     stored_name = f"{uuid.uuid4().hex}.{ext}"
     file_path = settings.UPLOAD_DIR / stored_name
 
+    # 流式下载：每次读取一个 chunk，避免整个文件驻留内存
+    total = 0
     try:
-        async with _httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            resp = await client.get(req.url)
-            resp.raise_for_status()
-            content = resp.content
+        async with _httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            async with client.stream("GET", req.url) as resp:
+                resp.raise_for_status()
+                loop = asyncio.get_event_loop()
+                with file_path.open("wb") as f:
+                    async for chunk in resp.aiter_bytes(_CHUNK_SIZE):
+                        total += len(chunk)
+                        if total > _MAX_BYTES:
+                            file_path.unlink(missing_ok=True)
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"URL 文件大小超过最大限制 {settings.MAX_UPLOAD_SIZE_MB} MB",
+                            )
+                        await loop.run_in_executor(None, f.write, chunk)
+    except HTTPException:
+        raise
     except Exception as e:
+        file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"URL 下载失败: {e}")
-
-    with open(file_path, "wb") as f:
-        f.write(content)
 
     doc = Document(
         user_id=user.id,
         title=title,
         filename=f"{title}.{ext}",
         file_path=str(file_path),
-        file_size=len(content),
+        file_size=total,
         file_type=ext,
         source_type="url",
         source_url=req.url,
@@ -737,6 +811,7 @@ async def import_url(
     db.add(doc)
     await db.flush()
     doc_id = doc.id
+    await db.commit()
     result = DocumentOut.model_validate(doc)
 
     async def _deferred():
@@ -759,16 +834,12 @@ async def upload_document(
     if not file.filename or not _allowed_ext(file.filename):
         raise HTTPException(status_code=400, detail="不支持的文件格式")
 
-    content = await file.read()
-    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件大小超过限制")
-
     ext = file.filename.rsplit(".", 1)[-1].lower()
     stored_name = f"{uuid.uuid4().hex}.{ext}"
     file_path = settings.UPLOAD_DIR / stored_name
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # 流式分块写磁盘：每次仅 50 MB 驻内存，最大支持 200 MB
+    file_size = await _stream_to_disk(file, file_path)
 
     title = os.path.splitext(file.filename)[0]
     doc = Document(
@@ -776,7 +847,7 @@ async def upload_document(
         title=title,
         filename=file.filename,
         file_path=str(file_path),
-        file_size=len(content),
+        file_size=file_size,
         file_type=ext,
         source_type="upload",
         status="pending",
@@ -784,6 +855,7 @@ async def upload_document(
     db.add(doc)
     await db.flush()
     doc_id = doc.id
+    await db.commit()
     result = DocumentOut.model_validate(doc)
 
     async def _deferred_processing():
@@ -814,19 +886,22 @@ async def upload_pdf_for_existing(
     if not file.filename or not _allowed_ext(file.filename):
         raise HTTPException(status_code=400, detail="不支持的文件格式")
 
-    content = await file.read()
-    if len(content) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件大小超过限制")
-
     ext = file.filename.rsplit(".", 1)[-1].lower()
     stored_name = f"{uuid.uuid4().hex}.{ext}"
     file_path = settings.UPLOAD_DIR / stored_name
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # 流式分块写磁盘
+    file_size = await _stream_to_disk(file, file_path)
+
+    # 清理旧文件（若存在）
+    if doc.file_path and os.path.exists(doc.file_path):
+        try:
+            os.unlink(doc.file_path)
+        except OSError:
+            pass
 
     doc.file_path = str(file_path)
-    doc.file_size = len(content)
+    doc.file_size = file_size
     doc.file_type = ext
     doc.filename = file.filename
     doc.status = "pending"

@@ -27,21 +27,39 @@ from app.services.content_service import (
 logger = logging.getLogger(__name__)
 
 
+# 每批合并的 PDF 页数：控制全文字符串内存峰值，大文件防 OOM
+_PDF_BATCH_PAGES = 30   # 每 30 PDF 页合并一次全文，不超过 ~1.5MB 文本
+_FULL_TEXT_MAX_CHARS = 80_000   # 传给 AI 的全文最多 8 万字符
+
+
 def _extract_text_from_pdf(file_path: str) -> tuple[str, int, list[str]]:
-    """从 PDF 提取文本，返回 (全文, 页数, 逐页文本列表)"""
+    """
+    从 PDF 逐页流式提取文本，返回 (全文摘要, 页数, 逐页文本列表)。
+    全文拼接时最多取 _FULL_TEXT_MAX_CHARS 字符，避免大 PDF 撑爆内存。
+    """
     try:
         import pdfplumber
         text_parts: list[str] = []
+        full_text_chunks: list[str] = []
+        total_chars = 0
+
         with pdfplumber.open(file_path) as pdf:
             page_count = len(pdf.pages)
             for page in pdf.pages:
                 t = page.extract_text() or ""
                 text_parts.append(t)
-        return "\n\n".join(text_parts), page_count, text_parts
+                # 全文只累积到上限，超出部分丢弃（AI 接口有 token 限制，截断无影响）
+                if total_chars < _FULL_TEXT_MAX_CHARS:
+                    take = min(len(t), _FULL_TEXT_MAX_CHARS - total_chars)
+                    full_text_chunks.append(t[:take])
+                    total_chars += take
+
+        full_text = "\n\n".join(full_text_chunks)
+        return full_text, page_count, text_parts
     except ImportError:
         logger.warning("pdfplumber 未安装，使用基础文本提取")
         text = _read_file_text(file_path)
-        return text, 1, [text]
+        return text[:_FULL_TEXT_MAX_CHARS], 1, [text]
     except Exception as e:
         logger.error(f"PDF 解析失败: {e}")
         return "", 0, []
@@ -53,7 +71,7 @@ def _extract_text_from_docx(file_path: str) -> tuple[str, int, list[str]]:
         from docx import Document as DocxDocument
         doc = DocxDocument(file_path)
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        full = "\n\n".join(paragraphs)
+        full = "\n\n".join(paragraphs)[:_FULL_TEXT_MAX_CHARS]
         chunk_size = 5
         pages = [
             "\n".join(paragraphs[i:i + chunk_size])
@@ -71,10 +89,10 @@ def _extract_text_from_docx(file_path: str) -> tuple[str, int, list[str]]:
 def _read_file_text(file_path: str) -> str:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+            return f.read(_FULL_TEXT_MAX_CHARS * 4)  # 按字节预读，避免超大文本文件全量读入
     except UnicodeDecodeError:
         with open(file_path, "r", encoding="gbk", errors="ignore") as f:
-            return f.read()
+            return f.read(_FULL_TEXT_MAX_CHARS * 4)
 
 
 def extract_text(file_path: str, file_type: str) -> tuple[str, int, list[str]]:
@@ -87,7 +105,7 @@ def extract_text(file_path: str, file_type: str) -> tuple[str, int, list[str]]:
         text = _read_file_text(file_path)
         chunk = 3000
         pages = [text[i:i + chunk] for i in range(0, max(len(text), 1), chunk)]
-        return text, len(pages), pages
+        return text[:_FULL_TEXT_MAX_CHARS], len(pages), pages
     else:
         return "", 0, []
 
@@ -133,6 +151,10 @@ async def process_document(doc_id: int) -> None:
             doc.processing_step = "生成摘要与知识点"
             await db.commit()
 
+            # PPT 页数上限：避免超大文档生成几百张 slide 把内存打满
+            MAX_SLIDES = 30
+            effective_page_count = min(page_count, MAX_SLIDES)
+
             logger.info(f"[Doc {doc_id}] Step 2+3: 并行生成摘要 + 提取关键知识点")
             summary, key_points = await asyncio.gather(
                 generate_summary(text),
@@ -144,15 +166,16 @@ async def process_document(doc_id: int) -> None:
             doc.processing_step = "生成PPT大纲"
             await db.commit()
 
-            logger.info(f"[Doc {doc_id}] Step 4: Qwen Plus 生成 PPT 内容")
-            ppt_content = await generate_ppt_content(text, page_count)
+            logger.info(f"[Doc {doc_id}] Step 4: Qwen Plus 生成 PPT 内容 (最多 {MAX_SLIDES} 页)")
+            ppt_content = await generate_ppt_content(text, effective_page_count)
             doc.ppt_content = ppt_content
             doc.progress = 70.0
             doc.processing_step = "生成讲解"
             await db.commit()
 
             logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本")
-            slides = await _generate_all_lectures(ppt_content, page_texts, doc_id=doc_id)
+            # page_texts 截断到 slide 数量，防止列表过长
+            slides = await _generate_all_lectures(ppt_content, page_texts[:MAX_SLIDES], doc_id=doc_id)
             doc.lecture_slides = slides
             doc.progress = 100.0
             doc.status = "ready"

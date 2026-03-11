@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     DOC_IMAGES_DIR: Path = _PROJECT_ROOT / "data" / "doc_images"
     SLIDE_IMAGES_DIR: Path = _PROJECT_ROOT / "data" / "slide_images"
 
-    MAX_UPLOAD_SIZE_MB: int = 50
+    MAX_UPLOAD_SIZE_MB: int = 200          # 单文件最大 200 MB
+    CHUNK_SIZE_MB: int = 50                # 流式接收时每块大小 50 MB
     ALLOWED_EXTENSIONS: set[str] = {"pdf", "docx", "txt", "md"}
 
     ROOT_PATH: str = ""

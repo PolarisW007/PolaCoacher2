@@ -4,9 +4,11 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -106,12 +108,33 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
+    """在 HTTP 层拦截超大请求体，避免大文件撑满内存再检查"""
+
+    def __init__(self, app, max_size_bytes: int):
+        super().__init__(app)
+        self.max_size = max_size_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.max_size:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"文件大小超过最大限制 {self.max_size // 1024 // 1024} MB"},
+            )
+        return await call_next(request)
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     lifespan=lifespan,
     root_path=settings.ROOT_PATH,
 )
+
+# 请求体大小硬限：200 MB（在应用层拦截，早于业务代码执行）
+_MAX_BODY = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+app.add_middleware(ContentSizeLimitMiddleware, max_size_bytes=_MAX_BODY)
 
 app.add_middleware(
     CORSMiddleware,
