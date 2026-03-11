@@ -9,6 +9,7 @@ export const docApi = {
     return client.post('/documents/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: onProgress,
+      timeout: 0,
     });
   },
   importUrl: (data) => client.post('/documents/import-url', data),
@@ -34,6 +35,7 @@ export const docApi = {
     return client.post(`/documents/${id}/upload-pdf`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: onProgress,
+      timeout: 0,
     });
   },
   generateCover: (id) => client.post(`/documents/${id}/generate-cover`),
