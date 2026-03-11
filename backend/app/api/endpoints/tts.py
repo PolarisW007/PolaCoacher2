@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tts", tags=["语音合成"])
 
 COSYVOICE_VOICES = [
-    {"id": "longxiaochun", "name": "龙小淳", "gender": "女", "preview_url": "/audio/preview/longxiaochun.mp3"},
-    {"id": "longxiaoxia", "name": "龙小夏", "gender": "女", "preview_url": "/audio/preview/longxiaoxia.mp3"},
-    {"id": "longxiaobai", "name": "龙小白", "gender": "男", "preview_url": "/audio/preview/longxiaobai.mp3"},
-    {"id": "longlaotie", "name": "龙老铁", "gender": "男", "preview_url": "/audio/preview/longlaotie.mp3"},
-    {"id": "longshu", "name": "龙叔", "gender": "男", "preview_url": "/audio/preview/longshu.mp3"},
-    {"id": "longxiaofei", "name": "龙小飞", "gender": "男", "preview_url": "/audio/preview/longxiaofei.mp3"},
-    {"id": "longyue", "name": "龙悦", "gender": "女", "preview_url": "/audio/preview/longyue.mp3"},
-    {"id": "longwan", "name": "龙婉", "gender": "女", "preview_url": "/audio/preview/longwan.mp3"},
+    {"id": "longxiaochun", "name": "九尾狐", "gender": "女", "preview_url": "/audio/preview/longxiaochun.mp3"},
+    {"id": "longxiaoxia", "name": "精卫", "gender": "女", "preview_url": "/audio/preview/longxiaoxia.mp3"},
+    {"id": "longxiaobai", "name": "白泽", "gender": "男", "preview_url": "/audio/preview/longxiaobai.mp3"},
+    {"id": "longlaotie", "name": "饕餮", "gender": "男", "preview_url": "/audio/preview/longlaotie.mp3"},
+    {"id": "longshu", "name": "烛龙", "gender": "男", "preview_url": "/audio/preview/longshu.mp3"},
+    {"id": "longxiaofei", "name": "穷奇", "gender": "男", "preview_url": "/audio/preview/longxiaofei.mp3"},
+    {"id": "longyue", "name": "青鸾", "gender": "女", "preview_url": "/audio/preview/longyue.mp3"},
+    {"id": "longwan", "name": "夫诸", "gender": "女", "preview_url": "/audio/preview/longwan.mp3"},
 ]
 
 

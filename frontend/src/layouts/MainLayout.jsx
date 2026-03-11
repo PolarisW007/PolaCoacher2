@@ -72,7 +72,21 @@ export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth <= 768;
+      setIsMobile(mobile);
+      if (mobile) {
+        setCollapsed(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -147,6 +161,7 @@ export default function MainLayout() {
         onCollapse={setCollapsed}
         trigger={null}
         width={220}
+        collapsedWidth={isMobile ? 0 : 80}
         style={{
           background: siderBg,
           borderRight: '1px solid #edf2f7',
@@ -342,7 +357,7 @@ export default function MainLayout() {
       </Sider>
 
       {/* ===== MAIN ===== */}
-      <Layout style={{ marginLeft: collapsed ? 80 : 220, transition: 'margin-left 0.25s ease' }}>
+      <Layout style={{ marginLeft: collapsed ? (isMobile ? 0 : 80) : 220, transition: 'margin-left 0.25s ease' }}>
         {/* Header */}
         <Header
           style={{

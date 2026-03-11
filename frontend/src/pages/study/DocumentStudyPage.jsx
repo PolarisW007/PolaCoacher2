@@ -14,6 +14,7 @@ import {
   MessageOutlined, PlusOutlined, DeleteOutlined, CloseOutlined,
   ReadOutlined, FileTextOutlined, MenuFoldOutlined, CopyOutlined,
   WechatOutlined, HeartOutlined, CheckCircleOutlined, TrophyOutlined,
+  FullscreenOutlined, FullscreenExitOutlined,
 } from '@ant-design/icons';
 import { docApi, lectureNoteApi, ttsApi, historyApi, settingsApi, analysisApi } from '../../api/documents';
 
@@ -161,6 +162,7 @@ export default function DocumentStudyPage() {
   const [generating, setGenerating] = useState(false);
 
   // Refs
+  const containerRef = useRef(null);
   const saveTimerRef = useRef(null);
   const audioRef = useRef(null);
   const sentenceTimerRef = useRef(null);
@@ -168,6 +170,25 @@ export default function DocumentStudyPage() {
   const startTimeRef = useRef(Date.now());
   const lectureTimerRef = useRef(null);
   const lectureTimeoutRef = useRef(null);
+
+  // Fullscreen state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      containerRef.current?.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  };
 
   const slides = useMemo(() => doc?.lecture_slides || [], [doc]);
   const hasLecture = slides.length > 0;
@@ -1125,7 +1146,31 @@ export default function DocumentStudyPage() {
   };
 
   return (
-    <div style={{ height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div ref={containerRef} style={{ height: isFullscreen ? '100vh' : 'calc(100vh - 60px)', width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#fff' }}>
+      <style>{`
+        @media (max-width: 768px) {
+          .study-header-text { display: none !important; }
+          .study-hide-mobile { display: none !important; }
+          .study-header { padding: 8px 10px !important; gap: 6px !important; flex-wrap: wrap !important; min-height: unset !important; }
+          .study-header .ant-space { gap: 4px !important; }
+          .study-left-panel { display: none !important; }
+          .study-right-panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; box-shadow: -2px 0 12px rgba(0,0,0,0.1); width: 85% !important; max-width: 320px; }
+          .study-center-panel { padding: 12px 16px !important; }
+          .study-header .playback-bar { gap: 4px !important; }
+          .study-header .playback-bar button { padding-inline: 12px !important; height: 32px !important; }
+        }
+        @media (max-width: 900px) and (orientation: landscape) {
+          .study-left-panel { width: 64px !important; }
+          .study-left-panel .ant-badge { min-width: 20px !important; height: 20px !important; line-height: 20px !important; font-size: 10px !important; }
+          .study-left-panel .ant-typography { display: none !important; }
+          .study-left-panel .anticon-check-circle { position: absolute; right: 4px; bottom: 4px; font-size: 10px !important; }
+          .study-header-text { display: none !important; }
+          .study-hide-mobile { display: none !important; }
+          .study-center-panel { padding: 16px 24px !important; }
+          .study-header { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
+          .study-header::-webkit-scrollbar { display: none; }
+        }
+      `}</style>
       {/* Top control bar */}
       <div className="study-header" style={{
         padding: '8px 20px',
@@ -1170,11 +1215,12 @@ export default function DocumentStudyPage() {
         {hasLecture && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             <Select size="small" style={{ width: 96, borderRadius: 8 }} value={selectedVoice} onChange={setSelectedVoice} placeholder="语音"
+              className="study-hide-mobile"
               options={voices.map(v => ({ label: v.label || v.name || v.id || v, value: v.id || v.name || v }))}
             />
 
             {/* 播放控制区 */}
-            <div style={{
+            <div className="playback-bar" style={{
               display: 'flex', alignItems: 'center', gap: 6,
               background: 'rgba(240,244,248,0.8)',
               borderRadius: 24, padding: '4px 8px',
@@ -1244,14 +1290,14 @@ export default function DocumentStudyPage() {
               </Tooltip>
             </div>
 
-            <Select size="small" style={{ width: 64 }} value={playbackRate} onChange={setPlaybackRate} options={RATE_OPTIONS} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Select size="small" style={{ width: 64 }} value={playbackRate} onChange={setPlaybackRate} options={RATE_OPTIONS} className="study-hide-mobile" />
+            <div className="study-hide-mobile" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <SoundOutlined style={{ fontSize: 13, color: '#999' }} />
               <Slider min={0} max={1} step={0.05} value={volume} onChange={setVolume}
                 tooltip={{ formatter: v => `${Math.round(v * 100)}%` }} style={{ width: 56, margin: 0 }}
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div className="study-hide-mobile" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }} className="study-header-text">自动</Text>
               <Switch size="small" checked={autoPlayNext} onChange={setAutoPlayNext} />
             </div>
@@ -1301,7 +1347,10 @@ export default function DocumentStudyPage() {
           <Tooltip title={rightPanelVisible ? '收起面板' : '展开面板'}>
             <Button size="small" icon={<MenuFoldOutlined />} onClick={() => setRightPanelVisible(v => !v)} />
           </Tooltip>
-          {hasLecture && <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{currentPage + 1} / {totalPages}</Text>}
+          <Tooltip title={isFullscreen ? '退出全屏' : '全屏阅读'}>
+            <Button size="small" icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} />
+          </Tooltip>
+          {hasLecture && <Text type="secondary" style={{ whiteSpace: 'nowrap' }} className="study-hide-mobile">{currentPage + 1} / {totalPages}</Text>}
         </Space>
       </div>
 
