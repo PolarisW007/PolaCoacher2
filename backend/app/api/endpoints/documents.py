@@ -30,6 +30,9 @@ from app.services.ai_service import generate_slide_scene_image
 
 router = APIRouter(prefix="/documents", tags=["文档"])
 
+# 静态路径单独路由，必须在主 router 之前挂载，避免被 /{doc_id} 抢先匹配（见测试报告 3.1）
+documents_static_router = APIRouter(tags=["文档"])
+
 # 流式写磁盘：每次从 UploadFile 读取 CHUNK_SIZE，写入目标文件，避免整个文件驻留内存
 _CHUNK_SIZE = settings.CHUNK_SIZE_MB * 1024 * 1024  # 50 MB per chunk
 _MAX_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024  # 200 MB hard limit
@@ -165,7 +168,7 @@ def _parse_annas_archive_html(html_text: str, libgen_source: bool = False) -> li
     return results
 
 
-@router.get("/book-search", response_model=ApiResponse)
+@documents_static_router.get("/book-search", response_model=ApiResponse)
 async def book_search(
     query: str = Query(..., min_length=1),
     language: str | None = None,
@@ -274,7 +277,7 @@ async def book_search(
     )
 
 
-@router.post("/book-import", response_model=ApiResponse)
+@documents_static_router.post("/book-import", response_model=ApiResponse)
 async def book_import(
     req: BookImportRequest,
     user: User = Depends(get_current_user),
@@ -626,7 +629,7 @@ async def _download_and_process_pdf(
 _retry_download_task = _download_and_process_pdf
 
 
-@router.get("/book-import/{task_id}/status", response_model=ApiResponse)
+@documents_static_router.get("/book-import/{task_id}/status", response_model=ApiResponse)
 async def book_import_status(
     task_id: int,
     user: User = Depends(get_current_user),
@@ -648,7 +651,7 @@ async def book_import_status(
     })
 
 
-@router.post("/book-import/{task_id}/retry", response_model=ApiResponse)
+@documents_static_router.post("/book-import/{task_id}/retry", response_model=ApiResponse)
 async def retry_book_import(
     task_id: int,
     user: User = Depends(get_current_user),
@@ -741,7 +744,7 @@ async def retry_download(
     )
 
 
-@router.get("/check-isbn/{isbn}", response_model=ApiResponse)
+@documents_static_router.get("/check-isbn/{isbn}", response_model=ApiResponse)
 async def check_isbn(
     isbn: str,
     user: User = Depends(get_current_user),
@@ -754,7 +757,7 @@ async def check_isbn(
     return ApiResponse.ok(data={"exists": exists, "isbn": isbn})
 
 
-@router.post("/import-url", response_model=ApiResponse[DocumentOut])
+@documents_static_router.post("/import-url", response_model=ApiResponse[DocumentOut])
 async def import_url(
     req: ImportUrlRequest,
     user: User = Depends(get_current_user),
@@ -825,12 +828,15 @@ async def import_url(
 # ---- 以下路由带 {doc_id} 路径参数 ----
 
 
-@router.post("/upload", response_model=ApiResponse[DocumentOut])
+@documents_static_router.post("/upload", response_model=ApiResponse[DocumentOut])
 async def upload_document(
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    import logging
+    _log = logging.getLogger(__name__)
+
     if not file.filename or not _allowed_ext(file.filename):
         raise HTTPException(status_code=400, detail="不支持的文件格式")
 
@@ -838,8 +844,9 @@ async def upload_document(
     stored_name = f"{uuid.uuid4().hex}.{ext}"
     file_path = settings.UPLOAD_DIR / stored_name
 
-    # 流式分块写磁盘：每次仅 50 MB 驻内存，最大支持 200 MB
+    _log.info(f"[Upload] 开始接收文件: {file.filename} ({ext})")
     file_size = await _stream_to_disk(file, file_path)
+    _log.info(f"[Upload] 文件写入完成: {file.filename}, size={file_size}")
 
     title = os.path.splitext(file.filename)[0]
     doc = Document(
@@ -859,10 +866,14 @@ async def upload_document(
     result = DocumentOut.model_validate(doc)
 
     async def _deferred_processing():
-        await asyncio.sleep(1)
-        await process_document(doc_id)
+        try:
+            await asyncio.sleep(1)
+            await process_document(doc_id)
+        except Exception as e:
+            _log.error(f"[Upload] 后台处理异常 doc_id={doc_id}: {e}", exc_info=True)
 
     asyncio.create_task(_deferred_processing())
+    _log.info(f"[Upload] 上传响应返回, doc_id={doc_id}")
     return ApiResponse.ok(data=result)
 
 
@@ -911,7 +922,7 @@ async def upload_pdf_for_existing(
     return ApiResponse.ok(data={"document_id": doc_id}, msg="PDF 已上传，开始 AI 处理")
 
 
-@router.get("/list", response_model=ApiResponse[PaginatedData[DocumentOut]])
+@documents_static_router.get("/list", response_model=ApiResponse[PaginatedData[DocumentOut]])
 async def list_documents(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -954,6 +965,25 @@ async def list_documents(
             total_pages=ceil(total / page_size) if total else 0,
         )
     )
+
+
+@router.post("/{doc_id}/reprocess", response_model=ApiResponse)
+async def reprocess_document(
+    doc_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """对停滞在 pending/error 状态的文档重新触发 AI 处理"""
+    doc = await _get_user_doc(doc_id, user.id, db)
+    if doc.status not in ("pending", "error"):
+        raise HTTPException(status_code=400, detail=f"当前状态 {doc.status} 不支持重新处理")
+    if not doc.file_path or not os.path.exists(doc.file_path):
+        raise HTTPException(status_code=400, detail="文档文件不存在，请重新上传")
+    doc.status = "pending"
+    doc.progress = 0
+    await db.commit()
+    asyncio.create_task(process_document(doc_id))
+    return ApiResponse.ok(msg="已重新启动 AI 处理")
 
 
 @router.get("/{doc_id}", response_model=ApiResponse[DocumentOut])

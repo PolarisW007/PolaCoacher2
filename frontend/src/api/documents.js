@@ -22,6 +22,7 @@ export const docApi = {
   list: (params) => client.get('/documents/list', { params }),
   get: (id) => client.get(`/documents/${id}`),
   delete: (id) => client.delete(`/documents/${id}`),
+  reprocess: (id) => client.post(`/documents/${id}/reprocess`),
   move: (id, groupId) => client.put(`/documents/${id}/move`, { group_id: groupId }),
   publish: (id, data) => client.post(`/documents/${id}/publish`, data),
   unpublish: (id) => client.post(`/documents/${id}/unpublish`),

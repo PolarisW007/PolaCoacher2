@@ -318,6 +318,48 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
               {doc.processing_step || getProgressLabel(doc.progress || 0)}
             </Text>
           )}
+          {doc.status === 'pending' && (
+            <Button
+              type="link"
+              size="small"
+              icon={<ReloadOutlined />}
+              style={{ marginTop: 4, padding: 0, fontSize: 11 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                docApi.reprocess(doc.id).then(() => {
+                  message.success('已重新启动 AI 处理');
+                  onRefresh?.();
+                }).catch((err) => {
+                  message.error(err.message || '重新处理失败');
+                });
+              }}
+            >
+              重新处理
+            </Button>
+          )}
+        </div>
+      )}
+
+      {doc.status === 'error' && doc.source_type !== 'book_search' && (
+        <div style={{ marginTop: 8 }}>
+          <Button
+            type="primary"
+            danger
+            size="small"
+            icon={<ReloadOutlined />}
+            block
+            onClick={(e) => {
+              e.stopPropagation();
+              docApi.reprocess(doc.id).then(() => {
+                message.success('已重新启动 AI 处理');
+                onRefresh?.();
+              }).catch((err) => {
+                message.error(err.message || '重新处理失败');
+              });
+            }}
+          >
+            重新处理
+          </Button>
         </div>
       )}
 

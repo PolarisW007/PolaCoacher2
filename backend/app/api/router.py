@@ -21,6 +21,8 @@ from app.api.endpoints.notes import doc_notes_router, notes_router
 api_router = APIRouter(prefix="/api")
 
 api_router.include_router(auth.router)
+# 静态文档路由优先挂载，避免 /documents/book-search、/documents/list 被 /documents/{doc_id} 匹配
+api_router.include_router(documents.documents_static_router, prefix="/documents")
 api_router.include_router(documents.router)
 api_router.include_router(groups.router)
 api_router.include_router(lecture_notes.router)
