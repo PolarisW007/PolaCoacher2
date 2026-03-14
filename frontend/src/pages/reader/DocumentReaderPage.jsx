@@ -756,7 +756,7 @@ export default function DocumentReaderPage() {
                     style={{ color: mainView === 'pdf' ? undefined : bgConfig.text }}
                     onClick={() => setMainView((v) => v === 'pdf' ? 'text' : 'pdf')}
                   >
-                    原文
+                    PDF
                   </Button>
                 </Tooltip>
                 <Tooltip title="下载 PDF">
