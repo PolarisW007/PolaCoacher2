@@ -1,12 +1,63 @@
 """
 内容解析服务 — 将 PDF/Word 文档解析为结构化章节+段落，供阅读器使用
 支持：文字段落识别、图片提取、分页、翻译
+
+提取策略（优先级）：
+  1. pymupdf — 字词边界准确，支持多栏检测，图文同步提取
+  2. pdfplumber — pymupdf 不可用时的备选方案
 """
 import asyncio
 import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────
+# 文字后处理工具
+# ─────────────────────────────────────────────
+
+def _post_process_text(text: str) -> str:
+    """
+    修复 PDF 提取常见的文字质量问题：
+      1. 字母间距标题 "R E L A T E D  W O R K" → "RELATED WORK"
+      2. 多余空格清理
+      3. 纯页码行过滤
+    """
+    if not text:
+        return text
+
+    tokens = text.split()
+    if not tokens:
+        return text
+
+    # 1. 检测并修复字母间距（letter-spaced）文字
+    #    如果 70%+ 的 token 都是单个字母，则将连续单字母 token 合并
+    single_alpha = [t for t in tokens if len(t) == 1 and t.isalpha()]
+    if len(single_alpha) >= max(3, len(tokens) * 0.65):
+        merged = []
+        buf = []
+        for t in tokens:
+            if len(t) == 1 and t.isalpha():
+                buf.append(t)
+            else:
+                if buf:
+                    merged.append("".join(buf))
+                    buf = []
+                merged.append(t)
+        if buf:
+            merged.append("".join(buf))
+        text = " ".join(merged)
+        tokens = text.split()
+
+    # 2. 清理多余空白
+    text = re.sub(r" {2,}", " ", text).strip()
+
+    # 3. 纯数字行（很可能是页码）
+    if re.match(r"^\d{1,4}$", text.strip()):
+        return ""
+
+    return text
 
 
 # ─────────────────────────────────────────────
@@ -53,18 +104,10 @@ def _classify_paragraph(text: str, font_size: float | None = None, is_bold: bool
     return "body"
 
 
-def _flush_line(words: list[dict], lines: list[tuple[str, float, bool]]):
-    text = " ".join(w.get("text", "") for w in words).strip()
-    if not text:
-        return
-    sizes = [w.get("size", 12) for w in words if w.get("size")]
-    avg_size = sum(sizes) / len(sizes) if sizes else 12.0
-    is_bold = any("bold" in (w.get("fontname") or "").lower() for w in words)
-    lines.append((text, avg_size, is_bold))
-
 
 # ─────────────────────────────────────────────
 # PDF 结构化提取（带图片）
+# 优先使用 pymupdf，备选 pdfplumber
 # ─────────────────────────────────────────────
 
 def extract_structured_from_pdf(
@@ -73,25 +116,52 @@ def extract_structured_from_pdf(
     image_url_prefix: str = "/doc_images",
 ) -> tuple[list[dict], list[dict]]:
     """
-    从 PDF 提取结构化内容（文字 + 图片）
+    从 PDF 提取结构化内容（文字 + 图片）。
     返回: (chapters, paragraphs)
-      paragraphs 节点类型:
-        {id, chapter_id, type="body"|"heading1"|"heading2"|"list", text, page}
-        {id, chapter_id, type="image", src="/doc_images/xxx.png", width, height, page}
     """
     import pathlib
+
+    if image_save_dir:
+        pathlib.Path(image_save_dir).mkdir(parents=True, exist_ok=True)
+
+    # ── 优先 pymupdf（更好的字词边界+多栏支持）────
+    try:
+        import fitz as _fitz
+        return _extract_with_pymupdf(file_path, image_save_dir, image_url_prefix, _fitz)
+    except ImportError:
+        logger.info("pymupdf 不可用，使用 pdfplumber")
+    except Exception as e:
+        logger.warning(f"pymupdf 提取失败 ({e})，降级 pdfplumber")
+
+    # ── 备选 pdfplumber ────────────────────────────
+    return _extract_with_pdfplumber(file_path, image_save_dir, image_url_prefix)
+
+
+def _extract_with_pymupdf(
+    file_path: str,
+    image_save_dir: str | None,
+    image_url_prefix: str,
+    fitz,
+) -> tuple[list[dict], list[dict]]:
+    """
+    使用 pymupdf 提取 PDF 文字和图片。
+    特性：
+     - get_text("words") 按字符级坐标精确分词，解决字符拼合问题
+     - 双栏检测：按页面宽度中线分左右栏，按栏序依次输出
+     - 图片提取：inline + 页面图像
+    """
+    import pathlib, hashlib
 
     paragraphs: list[dict] = []
     chapters: list[dict] = []
     current_chapter_id: str | None = None
     para_index = 0
-
-    # 图片去重（避免同一图片在不同层多次出现）
     seen_image_hashes: set[str] = set()
 
-    def _add_paragraph(ptype: str, text: str, page: int, size=None, bold=False):
+    def _add_para(ptype: str, text: str, page: int, size: float | None = None, bold: bool = False):
         nonlocal para_index, current_chapter_id
-        if not text.strip():
+        text = _post_process_text(text.strip())
+        if not text:
             return
         ptype = _classify_paragraph(text, size, bold) if ptype == "auto" else ptype
         if ptype == "empty":
@@ -102,178 +172,239 @@ def extract_structured_from_pdf(
             cid = f"c{len(chapters)}"
             chapters.append({"id": cid, "title": text[:120], "level": int(ptype[-1]), "para_index": para_index - 1})
             current_chapter_id = cid
-        paragraphs.append({"id": pid, "chapter_id": current_chapter_id, "type": ptype, "text": text, "page": page})
+        paragraphs.append({"id": pid, "chapter_id": current_chapter_id,
+                           "type": ptype, "text": text, "page": page})
 
-    def _add_image(src: str, width: int, height: int, page: int, img_hash: str):
+    def _add_image(src: str, w: int, h: int, page: int, img_hash: str):
         nonlocal para_index
-        if img_hash in seen_image_hashes:
-            return
-        if width < 30 or height < 30:   # 过滤装饰性小图
+        if img_hash in seen_image_hashes or w < 40 or h < 40:
             return
         seen_image_hashes.add(img_hash)
         pid = f"p{para_index}"
         para_index += 1
-        paragraphs.append({
-            "id": pid, "chapter_id": current_chapter_id,
-            "type": "image", "src": src, "width": width, "height": height,
-            "text": f"[图片 {width}x{height}]", "page": page,
-        })
+        paragraphs.append({"id": pid, "chapter_id": current_chapter_id,
+                           "type": "image", "src": src, "width": w, "height": h,
+                           "text": f"[图片 {w}x{h}]", "page": page})
+
+    doc = fitz.open(file_path)
+    try:
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
+            page_num = page_idx + 1
+            page_w = page.rect.width
+
+            # ── 提取图片 ────────────────────────────────
+            if image_save_dir:
+                for img_info in page.get_images(full=True):
+                    xref = img_info[0]
+                    try:
+                        base_img = doc.extract_image(xref)
+                        if not base_img:
+                            continue
+                        img_bytes = base_img["image"]
+                        w_i = base_img.get("width", 0)
+                        h_i = base_img.get("height", 0)
+                        ext = base_img.get("ext", "png")
+                        if w_i < 40 or h_i < 40:
+                            continue
+                        img_hash = hashlib.md5(img_bytes[:512]).hexdigest()[:12]
+                        if img_hash in seen_image_hashes:
+                            continue
+                        img_fn = f"{img_hash}.{ext}"
+                        img_path = pathlib.Path(image_save_dir) / img_fn
+                        if not img_path.exists():
+                            img_path.write_bytes(img_bytes)
+                        _add_image(f"{image_url_prefix}/{img_fn}", w_i, h_i, page_num, img_hash)
+                    except Exception:
+                        pass
+
+            # ── 提取文字（word 级）─────────────────────
+            # 返回 (x0, y0, x1, y1, word, block_no, line_no, word_no)
+            raw_words = page.get_text("words") or []
+            if not raw_words:
+                continue
+
+            # ── 双栏检测 ─────────────────────────────────
+            # 统计 word 中心 x 落在页面中间 20% 区域的占比；占比低 → 双栏
+            mid_lo, mid_hi = page_w * 0.4, page_w * 0.6
+            mid_count = sum(1 for w in raw_words if mid_lo < (w[0] + w[2]) / 2 < mid_hi)
+            is_two_col = (len(raw_words) >= 10) and (mid_count < len(raw_words) * 0.12)
+
+            if is_two_col:
+                col_cut = page_w / 2
+                left_w  = sorted([w for w in raw_words if (w[0] + w[2]) / 2 < col_cut],
+                                  key=lambda w: (round(w[1] / 3), w[0]))
+                right_w = sorted([w for w in raw_words if (w[0] + w[2]) / 2 >= col_cut],
+                                  key=lambda w: (round(w[1] / 3), w[0]))
+                ordered = left_w + right_w
+            else:
+                ordered = sorted(raw_words, key=lambda w: (round(w[1] / 3), w[0]))
+
+            # ── 按行聚合 ──────────────────────────────────
+            lines: list[list] = []
+            curr: list = []
+            for wd in ordered:
+                if curr:
+                    dy = abs(wd[1] - curr[-1][1])
+                    if dy > 4:
+                        lines.append(curr)
+                        curr = []
+                curr.append(wd)
+            if curr:
+                lines.append(curr)
+
+            # ── 行 → 段落 ─────────────────────────────────
+            para_buf: list[str] = []
+            para_size: float | None = None
+
+            def _flush_buf():
+                nonlocal para_buf, para_size
+                if para_buf:
+                    _add_para("auto", " ".join(para_buf), page_num, para_size)
+                    para_buf = []
+                    para_size = None
+
+            for line_words in lines:
+                line_text = " ".join(w[4] for w in line_words).strip()
+                if not line_text:
+                    continue
+                line_text = _post_process_text(line_text)
+                if not line_text:
+                    continue
+
+                # 使用 block_no 估算字体大小（粗略）
+                ltype = _classify_paragraph(line_text)
+
+                if ltype in ("heading1", "heading2", "heading3", "list"):
+                    _flush_buf()
+                    _add_para(ltype, line_text, page_num)
+                else:
+                    # 短行（<60 字符）且缓冲区已足够 → 换段
+                    if len(line_text) < 60 and para_buf and len(" ".join(para_buf)) > 300:
+                        _flush_buf()
+                    para_buf.append(line_text)
+                    if para_size is None:
+                        para_size = 11.0
+
+            _flush_buf()
+
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    if not chapters and paragraphs:
+        chapters = _generate_virtual_chapters(paragraphs)
+
+    return chapters, paragraphs
+
+
+def _extract_with_pdfplumber(
+    file_path: str,
+    image_save_dir: str | None,
+    image_url_prefix: str,
+) -> tuple[list[dict], list[dict]]:
+    """
+    pdfplumber 备用提取路径（当 pymupdf 不可用时）。
+    使用 extract_text() 而非 extract_words()，规避字间距引起的拼合问题。
+    """
+    import pathlib, hashlib
+
+    paragraphs: list[dict] = []
+    chapters: list[dict] = []
+    current_chapter_id: str | None = None
+    para_index = 0
+    seen_image_hashes: set[str] = set()
+
+    def _add_para(ptype: str, text: str, page: int, size=None, bold=False):
+        nonlocal para_index, current_chapter_id
+        text = _post_process_text(text.strip())
+        if not text:
+            return
+        ptype = _classify_paragraph(text, size, bold) if ptype == "auto" else ptype
+        if ptype == "empty":
+            return
+        pid = f"p{para_index}"
+        para_index += 1
+        if ptype in ("heading1", "heading2", "heading3"):
+            cid = f"c{len(chapters)}"
+            chapters.append({"id": cid, "title": text[:120], "level": int(ptype[-1]), "para_index": para_index - 1})
+            current_chapter_id = cid
+        paragraphs.append({"id": pid, "chapter_id": current_chapter_id,
+                           "type": ptype, "text": text, "page": page})
 
     try:
         import pdfplumber
 
-        # 尝试用 pymupdf 提取图片（更准确），降级到 pdfplumber
-        fitz_available = False
-        try:
-            import fitz as pymupdf  # pymupdf
-            fitz_available = True
-        except ImportError:
-            pass
-
-        if image_save_dir:
-            pathlib.Path(image_save_dir).mkdir(parents=True, exist_ok=True)
-
-        # ── 用 pymupdf 提取图片 ────────────────────────
-        page_images: dict[int, list[dict]] = {}   # page_num(1-based) -> [{src, width, height, y0, hash}]
-        if fitz_available and image_save_dir:
-            doc_fitz = None
-            try:
-                doc_fitz = pymupdf.open(file_path)
-                for page_idx in range(len(doc_fitz)):
-                    page_num = page_idx + 1
-                    fitz_page = doc_fitz[page_idx]
-                    img_list = fitz_page.get_images(full=True)
-                    page_images[page_num] = []
-                    for img_info in img_list:
-                        xref = img_info[0]
-                        base_img = doc_fitz.extract_image(xref)
-                        if not base_img:
-                            continue
-                        img_bytes = base_img["image"]
-                        w = base_img.get("width", 0)
-                        h = base_img.get("height", 0)
-                        ext = base_img.get("ext", "png")
-                        if w < 30 or h < 30:
-                            continue
-                        import hashlib
-                        img_hash = hashlib.md5(img_bytes[:256]).hexdigest()[:12]
-                        img_filename = f"{img_hash}.{ext}"
-                        img_path = pathlib.Path(image_save_dir) / img_filename
-                        if not img_path.exists():
-                            with open(img_path, "wb") as f:
-                                f.write(img_bytes)
-                        src = f"{image_url_prefix}/{img_filename}"
-                        rects = fitz_page.get_image_rects(xref)
-                        y0 = rects[0].y0 if rects else 0
-                        page_images[page_num].append({
-                            "src": src, "width": w, "height": h, "y0": y0, "hash": img_hash,
-                        })
-            except Exception as e:
-                logger.warning(f"pymupdf 图片提取失败: {e}, 跳过图片")
-                page_images = {}
-            finally:
-                if doc_fitz is not None:
-                    try:
-                        doc_fitz.close()
-                    except Exception:
-                        pass
-
-        # ── 用 pdfplumber 提取文字 ─────────────────────
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
-                # 获取该页图片（按 y0 排序，用于按位置插入）
-                page_img_list = sorted(page_images.get(page_num, []), key=lambda x: x["y0"])
-                img_cursor = 0   # 下一个待插入图片的索引
-
-                def _maybe_insert_images_above(text_y: float):
-                    """插入 y 坐标在 text_y 之前的图片"""
-                    nonlocal img_cursor
-                    while img_cursor < len(page_img_list):
-                        img = page_img_list[img_cursor]
-                        if img["y0"] <= text_y:
-                            _add_image(img["src"], img["width"], img["height"], page_num, img["hash"])
-                            img_cursor += 1
-                        else:
-                            break
-
-                # 获取带字体信息的词列表
+                # 先尝试带词信息的提取（x_tolerance 放宽到 6，减少错误拼合）
                 words = page.extract_words(
-                    x_tolerance=3,
-                    y_tolerance=3,
+                    x_tolerance=6, y_tolerance=4,
                     extra_attrs=["size", "fontname"],
                 ) or []
 
-                if not words:
-                    # 纯文本 fallback（仅当 extract_words 无结果时走此路径，不重复）
+                if words:
+                    # 按行聚合
+                    lines: list[tuple] = []
+                    curr_words: list[dict] = []
+                    for w in words:
+                        if curr_words:
+                            dy = abs(w.get("top", 0) - curr_words[-1].get("top", 0))
+                            if dy > 5:
+                                _flush_line_with_y(curr_words, lines)
+                                curr_words = []
+                        curr_words.append(w)
+                    if curr_words:
+                        _flush_line_with_y(curr_words, lines)
+
+                    para_buf: list[str] = []
+                    para_size: float | None = None
+                    para_bold: bool = False
+
+                    def _emit():
+                        nonlocal para_buf, para_size, para_bold
+                        if para_buf:
+                            _add_para("auto", " ".join(para_buf), page_num, para_size, para_bold)
+                            para_buf.clear()
+                            para_size = None
+                            para_bold = False
+
+                    for line_text, avg_size, is_bold, _ in lines:
+                        line_text = _post_process_text(line_text)
+                        if not line_text:
+                            continue
+                        ltype = _classify_paragraph(line_text, avg_size, is_bold)
+                        if ltype in ("heading1", "heading2", "heading3", "list"):
+                            _emit()
+                            _add_para(ltype, line_text, page_num, avg_size, is_bold)
+                        elif ltype == "empty":
+                            _emit()
+                        else:
+                            if len(line_text) < 55 and para_buf and len(" ".join(para_buf)) > 250:
+                                _emit()
+                            if para_size is None:
+                                para_size = avg_size
+                                para_bold = is_bold
+                            para_buf.append(line_text)
+                    _emit()
+                else:
+                    # fallback: extract_text
                     raw = page.extract_text() or ""
                     for line in raw.split("\n"):
-                        _add_paragraph("auto", line.strip(), page_num)
-                    # 页面剩余图片（文字之后的图片）
-                    for img in page_img_list[img_cursor:]:
-                        _add_image(img["src"], img["width"], img["height"], page_num, img["hash"])
-                    continue
-
-                # ── 按行聚合（相近 y 的 words 合为一行）────
-                lines: list[tuple[str, float, bool, float]] = []  # (text, avg_size, is_bold, avg_top)
-                current_line_words: list[dict] = []
-
-                for w in words:
-                    if current_line_words:
-                        y_diff = abs(w.get("top", 0) - current_line_words[-1].get("top", 0))
-                        if y_diff > 5:
-                            _flush_line_with_y(current_line_words, lines)
-                            current_line_words = []
-                    current_line_words.append(w)
-                if current_line_words:
-                    _flush_line_with_y(current_line_words, lines)
-
-                # ── 合并连续 body 行为段落 ─────────────────
-                para_buffer: list[str] = []
-                para_size: float | None = None
-                para_bold: bool = False
-                para_top: float = 0.0
-
-                def _emit():
-                    nonlocal para_buffer, para_size, para_bold
-                    if not para_buffer:
-                        return
-                    _add_paragraph("auto", " ".join(para_buffer), page_num, para_size, para_bold)
-                    para_buffer.clear()
-                    para_size = None
-                    para_bold = False
-
-                for line_text, avg_size, is_bold, avg_top in lines:
-                    _maybe_insert_images_above(avg_top)
-                    line_type = _classify_paragraph(line_text, avg_size, is_bold)
-                    if line_type in ("heading1", "heading2", "heading3", "list"):
-                        _emit()
-                        _add_paragraph(line_type, line_text, page_num, avg_size, is_bold)
-                    elif line_type == "empty":
-                        _emit()
-                    else:
-                        # body：短行且缓冲区已很长时换段
-                        if len(line_text) < 55 and para_buffer and len(" ".join(para_buffer)) > 250:
-                            _emit()
-                        if para_size is None:
-                            para_size = avg_size
-                            para_bold = is_bold
-                            para_top = avg_top
-                        para_buffer.append(line_text)
-
-                _emit()
-
-                # 页面剩余图片（位于所有文字之后）
-                for img in page_img_list[img_cursor:]:
-                    _add_image(img["src"], img["width"], img["height"], page_num, img["hash"])
+                        line = _post_process_text(line.strip())
+                        if line:
+                            _add_para("auto", line, page_num)
 
     except ImportError:
         logger.warning("pdfplumber 未安装，使用纯文本 fallback")
-        return _extract_structured_plain(file_path), []  # type: ignore
+        chs, paras = _extract_structured_plain(file_path)
+        return chs, paras
     except Exception as e:
-        logger.error(f"PDF 结构化提取失败: {e}", exc_info=True)
+        logger.error(f"pdfplumber 提取失败: {e}", exc_info=True)
         return [], []
 
-    # 如果没识别到章节，按约每 25 段生成虚拟章节
     if not chapters and paragraphs:
         chapters = _generate_virtual_chapters(paragraphs)
 

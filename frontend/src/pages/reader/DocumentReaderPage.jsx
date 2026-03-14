@@ -733,22 +733,41 @@ export default function DocumentReaderPage() {
 
       {/* 右：工具区 */}
       <Space size={4} style={{ flexShrink: 0 }}>
-        {/* 原文切换按钮 */}
-        {doc?.file_path && (() => {
+        {/* 原文切换 + 下载按钮（仅依赖 file_type，不依赖 file_path） */}
+        {doc?.file_type && (() => {
           const ft = doc.file_type?.toLowerCase();
+          const pdfUrl = docApi.getPdf(id);
+          const handleDownload = () => {
+            const token = localStorage.getItem('token');
+            const url = `${pdfUrl}${pdfUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token || '')}`;
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${doc.title || 'document'}.pdf`;
+            a.click();
+          };
           if (ft === 'pdf') {
             return (
-              <Tooltip title={mainView === 'pdf' ? '切换为 AI 解析文本' : '查看原始 PDF'}>
-                <Button
-                  type={mainView === 'pdf' ? 'primary' : 'text'}
-                  size="small"
-                  icon={<FilePdfOutlined />}
-                  style={{ color: mainView === 'pdf' ? undefined : bgConfig.text }}
-                  onClick={() => setMainView((v) => v === 'pdf' ? 'text' : 'pdf')}
-                >
-                  原文
-                </Button>
-              </Tooltip>
+              <>
+                <Tooltip title={mainView === 'pdf' ? '切换为 AI 解析文本' : '查看原始 PDF'}>
+                  <Button
+                    type={mainView === 'pdf' ? 'primary' : 'text'}
+                    size="small"
+                    icon={<FilePdfOutlined />}
+                    style={{ color: mainView === 'pdf' ? undefined : bgConfig.text }}
+                    onClick={() => setMainView((v) => v === 'pdf' ? 'text' : 'pdf')}
+                  >
+                    原文
+                  </Button>
+                </Tooltip>
+                <Tooltip title="下载 PDF">
+                  <Button
+                    type="text" size="small"
+                    icon={<span style={{ fontSize: 14 }}>⬇</span>}
+                    style={{ color: bgConfig.text }}
+                    onClick={handleDownload}
+                  />
+                </Tooltip>
+              </>
             );
           }
           if (ft === 'txt' || ft === 'md') {
@@ -770,11 +789,10 @@ export default function DocumentReaderPage() {
             return (
               <Tooltip title="下载原始 Word 文件">
                 <Button
-                  type="text"
-                  size="small"
+                  type="text" size="small"
                   icon={<FileTextOutlined />}
                   style={{ color: bgConfig.text }}
-                  onClick={() => window.open(docApi.getPdf(id), '_blank')}
+                  onClick={() => window.open(pdfUrl, '_blank')}
                 >
                   原文
                 </Button>
@@ -783,11 +801,28 @@ export default function DocumentReaderPage() {
           }
           return null;
         })()}
+        {/* 重新解析（文字内容乱码时用） */}
+        {contentReady && mainView === 'text' && (
+          <Tooltip title="重新解析文档内容">
+            <Button
+              type="text" size="small"
+              icon={<ReloadOutlined />}
+              style={{ color: bgConfig.text, opacity: 0.6 }}
+              onClick={async () => {
+                try {
+                  await docApi.reparse(id);
+                  message.success('重新解析已开始，约30秒后刷新页面');
+                  setTimeout(() => fetchContent(), 30000);
+                } catch { message.error('触发失败'); }
+              }}
+            />
+          </Tooltip>
+        )}
         {/* 全屏按钮 */}
         <Tooltip title={isFullscreen ? "退出全屏" : "全屏阅读"}>
           <Button
             type="text" size="small"
-            icon={<span style={{ fontSize: 16 }}>{isFullscreen ? '⛶' : '⛶'}</span>} // Placeholder for a better icon if needed, using unicode or just text is fine for now, let's use text for safety if no icon
+            icon={<span style={{ fontSize: 14 }}>{isFullscreen ? '⛶' : '⛶'}</span>}
             onClick={toggleFullscreen}
             style={{ color: bgConfig.text }}
           >
@@ -1150,7 +1185,7 @@ export default function DocumentReaderPage() {
           bgConfig={bgConfig}
           highlights={highlights}
           renderParaText={renderParaText}
-          apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}`}
+          apiBase={`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`}
         />
       ));
     };
