@@ -1848,28 +1848,36 @@ function TranslationToggle({ lang, translationStatus, translationLang, langMode,
     );
   }
 
+  // 循环顺序：原文 → 译文 → 双语 → 原文…
+  const LANG_CYCLE = ['original', 'translated', 'bilingual'];
+  const LANG_LABEL = { original: '原文', translated: '译文', bilingual: '双语' };
+  const LANG_ICON  = { original: null, translated: null, bilingual: <SwapOutlined /> };
+  const cycleNext = () => {
+    const idx = LANG_CYCLE.indexOf(langMode);
+    setLangMode(LANG_CYCLE[(idx + 1) % LANG_CYCLE.length]);
+  };
+
   if (isTranslating) {
     return (
       <Space size={4}>
         <SyncOutlined spin style={{ color: '#1890ff' }} />
         <Text style={{ fontSize: 12, color: '#1890ff' }}>翻译中</Text>
-        <Button size="small" type={langMode === 'bilingual' ? 'primary' : 'text'} style={{ color: langMode === 'bilingual' ? undefined : bgText }}
-          onClick={() => setLangMode(langMode === 'bilingual' ? 'original' : 'bilingual')}>双语</Button>
+        <Tooltip title={`当前：${LANG_LABEL[langMode]}，点击切换`}>
+          <Button size="small" type="primary" icon={LANG_ICON[langMode]} onClick={cycleNext}>
+            {LANG_LABEL[langMode]}
+          </Button>
+        </Tooltip>
       </Space>
     );
   }
 
   if (hasTranslation) {
     return (
-      <Space size={4}>
-        <Button size="small" type={langMode === 'original' ? 'primary' : 'default'}
-          onClick={() => setLangMode('original')}>原文</Button>
-        <Button size="small" type={langMode === 'translated' ? 'primary' : 'default'}
-          onClick={() => setLangMode('translated')}>译文</Button>
-        <Button size="small" type={langMode === 'bilingual' ? 'primary' : 'default'}
-          icon={<SwapOutlined />}
-          onClick={() => setLangMode('bilingual')}>双语</Button>
-      </Space>
+      <Tooltip title={`当前：${LANG_LABEL[langMode]}，点击切换`}>
+        <Button size="small" type="primary" icon={LANG_ICON[langMode]} onClick={cycleNext}>
+          {LANG_LABEL[langMode]}
+        </Button>
+      </Tooltip>
     );
   }
 
