@@ -320,25 +320,43 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
               {doc.processing_step || getProgressLabel(doc.progress || 0)}
             </Text>
           )}
-          {doc.status === 'pending' && (
-            <Button
-              type="link"
-              size="small"
-              icon={<ReloadOutlined />}
-              style={{ marginTop: 4, padding: 0, fontSize: 11 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                docApi.reprocess(doc.id).then(() => {
-                  message.success('已重新启动 AI 处理');
-                  onRefresh?.();
-                }).catch((err) => {
-                  message.error(err.message || '重新处理失败');
-                });
-              }}
-            >
-              重新处理
-            </Button>
-          )}
+          {(doc.status === 'pending' || doc.status === 'importing') && (() => {
+            // 判断是否超时卡死（前端保守估计：updated_at 超过 10 分钟仍在中间状态）
+            const updatedAt = doc.updated_at ? new Date(doc.updated_at) : null;
+            const stuckMinutes = updatedAt ? (Date.now() - updatedAt.getTime()) / 60000 : 0;
+            const isStuck = stuckMinutes > 10;
+            return (
+              <div style={{ marginTop: 4 }}>
+                {isStuck && doc.status === 'importing' && (
+                  <div style={{
+                    fontSize: 11, color: '#fa8c16', background: '#fff7e6',
+                    border: '1px solid #ffd591', borderRadius: 4,
+                    padding: '3px 7px', marginBottom: 4, lineHeight: 1.4,
+                  }}>
+                    下载超过 {Math.round(stuckMinutes)} 分钟，可能已卡住
+                  </div>
+                )}
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  style={{ padding: 0, fontSize: 11, color: isStuck ? '#ff4d4f' : undefined }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    docApi.reprocess(doc.id).then(() => {
+                      message.success('已重新启动处理');
+                      onRefresh?.();
+                    }).catch((err) => {
+                      const detail = err.response?.data?.detail || err.message || '重新处理失败';
+                      message.error(detail);
+                    });
+                  }}
+                >
+                  {isStuck ? '强制重新处理' : '重新处理'}
+                </Button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

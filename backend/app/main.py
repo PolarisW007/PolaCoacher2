@@ -93,6 +93,38 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.error(f"音频清理异常: {e}")
 
+    # 启动时恢复异常中断的 importing/processing 文档状态
+    async def _recover_stuck_docs():
+        """服务重启后将长时间卡在 importing/processing 的文档重置为 error，避免永久卡死。"""
+        import datetime
+        from sqlalchemy import select as _sel, update as _upd
+        from app.core.database import async_session_factory
+        from app.models.document import Document
+        STUCK_MINUTES = 30  # 超过30分钟仍在中间状态视为卡死
+        try:
+            async with async_session_factory() as _s:
+                cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=STUCK_MINUTES)
+                result = await _s.execute(
+                    _sel(Document).where(
+                        Document.status.in_(["importing", "processing"]),
+                        Document.updated_at < cutoff,
+                    )
+                )
+                stuck = result.scalars().all()
+                for _d in stuck:
+                    logging.warning(f"[Startup] 重置卡死文档 id={_d.id} title={_d.title!r} status={_d.status}")
+                    _d.status = "error"
+                    _d.error_detail = f"上次处理（{_d.status}）被中断（服务重启或超时），请点击重新处理。"
+                    _d.progress = 0
+                    _d.processing_step = None
+                await _s.commit()
+                if stuck:
+                    logging.info(f"[Startup] 共重置 {len(stuck)} 个卡死文档")
+        except Exception as _e:
+            logging.error(f"[Startup] 恢复卡死文档失败: {_e}")
+
+    asyncio.create_task(_recover_stuck_docs())
+
     # 初始化 Z-Library 凭据（加密存储于内存）
     from app.services.zlib_service import init_zlib_credentials
     init_zlib_credentials(

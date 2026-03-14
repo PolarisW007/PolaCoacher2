@@ -1031,59 +1031,100 @@ async def list_documents(
 @router.post("/{doc_id}/reprocess", response_model=ApiResponse)
 async def reprocess_document(
     doc_id: int,
+    force_redownload: bool = False,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    智能重新处理：
-    - 文件存在 → 直接重跑 AI 处理流程
-    - 文件不存在但有 md5 → 自动路由为重新下载
-    - 文件不存在且无 md5 → 提示手动上传
+    智能重新处理（含卡死状态恢复）：
+    - importing 状态超时卡死 → 可强制中断并重新下载
+    - 文件存在且可读（含文字）→ 直接重跑 AI 处理
+    - 文件存在但是扫描版（无文字）→ 返回明确提示，不无限循环重下
+    - 文件损坏/不存在且有 md5 → 重新下载
+    - force_redownload=True → 强制删除旧文件并重新下载
     """
     import re as _re
     from app.models.social import BookImportTask
 
     doc = await _get_user_doc(doc_id, user.id, db)
-    if doc.status not in ("pending", "error", "pending_upload"):
+
+    # 允许更多状态进入重处理，包含 importing（卡死恢复）
+    ALLOWED = ("pending", "error", "pending_upload", "importing")
+    if doc.status not in ALLOWED:
         raise HTTPException(status_code=400, detail=f"当前状态 {doc.status} 不支持重新处理")
 
-    file_ok = False
-    if doc.file_path and os.path.exists(doc.file_path) and os.path.getsize(doc.file_path) > 1024:
-        # 进一步验证 PDF 内容可读（防止损坏的文件）
+    # ── 强制重下载模式 ──────────────────────────────────
+    if force_redownload and doc.file_path and os.path.exists(doc.file_path):
         try:
-            import pdfplumber as _pdfplumber
-            with _pdfplumber.open(doc.file_path) as _pdf:
-                _sample = ""
-                for _page in _pdf.pages[:2]:
-                    _sample += (_page.extract_text() or "")
-            if _sample.strip():
-                file_ok = True
-            else:
-                # pdfplumber 无文字，尝试 pypdf
-                try:
-                    from pypdf import PdfReader as _PdfReader
-                    _reader = _PdfReader(doc.file_path)
-                    _sample2 = ""
-                    for _pg in _reader.pages[:2]:
-                        _sample2 += (_pg.extract_text() or "")
-                    if _sample2.strip():
-                        file_ok = True
-                except Exception:
-                    pass
+            os.remove(doc.file_path)
         except Exception:
             pass
+        doc.file_path = None
 
+    # ── 检查本地文件状态 ───────────────────────────────
+    file_ok = False
+    is_scanned = False   # 有效PDF但无可提取文字（扫描版）
+
+    if not force_redownload and doc.file_path and os.path.exists(doc.file_path) and os.path.getsize(doc.file_path) > 1024:
+        # 优先用 pymupdf 判断（更准确）
+        try:
+            import fitz as _fitz
+            with _fitz.open(doc.file_path) as _fz:
+                _page_count = _fz.page_count
+                if _page_count > 0:
+                    # PDF 结构有效，检查是否有可提取文字
+                    _sample = ""
+                    for _pg in _fz[:min(3, _page_count)]:
+                        _sample += _pg.get_text()
+                    if _sample.strip():
+                        file_ok = True
+                    else:
+                        is_scanned = True   # 有效PDF但无文字 = 扫描版
+                # page_count == 0 → 损坏，file_ok = False, is_scanned = False
+        except ImportError:
+            # pymupdf 不可用，退回 pdfplumber
+            try:
+                import pdfplumber as _pdfplumber
+                with _pdfplumber.open(doc.file_path) as _pdf:
+                    if _pdf.pages:
+                        _sample = ""
+                        for _page in _pdf.pages[:3]:
+                            _sample += (_page.extract_text() or "")
+                        if _sample.strip():
+                            file_ok = True
+                        else:
+                            is_scanned = True
+            except Exception:
+                pass  # 打开失败 → 损坏
+        except Exception:
+            pass  # 其他错误 → 损坏
+
+        # 扫描版：不删不重下，直接返回明确说明
+        if is_scanned:
+            logger.warning(f"[Reprocess] doc_id={doc_id} 检测为扫描版PDF，无文字可提取")
+            doc.status = "error"
+            doc.error_detail = (
+                "该PDF为扫描版图片格式，无法自动提取文字。"
+                "请在网上搜索文字版（可复制文字的）PDF，或手动上传文字版本。"
+                "若确认已有更好的版本，请点击「手动上传PDF」替换。"
+            )
+            await db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail=doc.error_detail,
+            )
+
+        # 损坏的文件：删除，走重下流程
         if not file_ok:
-            # PDF 损坏，删除后走重新下载流程
-            logger.warning(f"[Reprocess] doc_id={doc_id} PDF 内容无法提取，视为损坏，删除后重新下载")
+            logger.warning(f"[Reprocess] doc_id={doc_id} PDF 结构损坏，删除后重新下载")
             try:
                 os.remove(doc.file_path)
             except Exception:
                 pass
             doc.file_path = None
 
+    # ── 文件可用 → 重跑 AI ─────────────────────────────
     if file_ok:
-        # 文件存在且可读，直接重跑 AI 处理
         doc.status = "pending"
         doc.progress = 0
         doc.error_detail = None
@@ -1091,7 +1132,7 @@ async def reprocess_document(
         asyncio.create_task(process_document(doc_id))
         return ApiResponse.ok(msg="已重新启动 AI 处理")
 
-    # 文件不存在，尝试重新下载
+    # ── 文件不存在 → 尝试重新下载 ─────────────────────
     md5 = ""
     if doc.source_url:
         m = _re.search(r'/md5/([a-f0-9]{32})', doc.source_url)
@@ -1101,10 +1142,10 @@ async def reprocess_document(
     if not md5:
         raise HTTPException(
             status_code=400,
-            detail="文档文件丢失且无法自动重新下载，请重新上传 PDF 文件"
+            detail="文档文件丢失且无法自动重新下载（无下载源），请手动上传 PDF 文件"
         )
 
-    # 有 md5，走重新下载流程
+    # 有 md5，启动重新下载
     doc.status = "importing"
     doc.error_detail = None
     task_result = await db.execute(
@@ -1135,7 +1176,7 @@ async def reprocess_document(
 
     retry_book_source = "zlib" if (doc.source_type and "zlib" in doc.source_type.lower()) else "lgrsnf"
     asyncio.create_task(_retry_download_task(task_id, doc_id, md5, book_source=retry_book_source))
-    return ApiResponse.ok(msg="文件丢失，已自动重新下载 PDF，请稍候...")
+    return ApiResponse.ok(msg="已重新启动下载，请稍候（约1-3分钟）...")
 
 
 @router.get("/{doc_id}", response_model=ApiResponse[DocumentOut])
