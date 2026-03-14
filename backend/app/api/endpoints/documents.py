@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from math import ceil
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -1044,10 +1047,43 @@ async def reprocess_document(
     if doc.status not in ("pending", "error", "pending_upload"):
         raise HTTPException(status_code=400, detail=f"当前状态 {doc.status} 不支持重新处理")
 
-    file_ok = doc.file_path and os.path.exists(doc.file_path) and os.path.getsize(doc.file_path) > 1024
+    file_ok = False
+    if doc.file_path and os.path.exists(doc.file_path) and os.path.getsize(doc.file_path) > 1024:
+        # 进一步验证 PDF 内容可读（防止损坏的文件）
+        try:
+            import pdfplumber as _pdfplumber
+            with _pdfplumber.open(doc.file_path) as _pdf:
+                _sample = ""
+                for _page in _pdf.pages[:2]:
+                    _sample += (_page.extract_text() or "")
+            if _sample.strip():
+                file_ok = True
+            else:
+                # pdfplumber 无文字，尝试 pypdf
+                try:
+                    from pypdf import PdfReader as _PdfReader
+                    _reader = _PdfReader(doc.file_path)
+                    _sample2 = ""
+                    for _pg in _reader.pages[:2]:
+                        _sample2 += (_pg.extract_text() or "")
+                    if _sample2.strip():
+                        file_ok = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        if not file_ok:
+            # PDF 损坏，删除后走重新下载流程
+            logger.warning(f"[Reprocess] doc_id={doc_id} PDF 内容无法提取，视为损坏，删除后重新下载")
+            try:
+                os.remove(doc.file_path)
+            except Exception:
+                pass
+            doc.file_path = None
 
     if file_ok:
-        # 文件存在，直接重跑 AI 处理
+        # 文件存在且可读，直接重跑 AI 处理
         doc.status = "pending"
         doc.progress = 0
         doc.error_detail = None
