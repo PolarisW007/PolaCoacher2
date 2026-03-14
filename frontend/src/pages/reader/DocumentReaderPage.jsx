@@ -1640,29 +1640,44 @@ export default function DocumentReaderPage() {
   const docFileType = doc?.file_type?.toLowerCase();
 
   const renderOriginalView = () => {
+    // 用 position:absolute 精确定位：从顶栏下方(52px)到底部，避免顶栏遮盖 PdfViewer 工具栏
+    const wrapStyle = {
+      position: 'absolute',
+      top: 52,   // app 顶栏高度
+      left: 0,
+      right: 0,
+      bottom: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      zIndex: 10,
+    };
+
     if (docFileType === 'pdf') {
       return (
-        <PdfViewer
-          url={pdfUrl}
-          height="100%"
-          filename={`${doc.title}.pdf`}
-          onPageChange={setPdfPage}
-          onTotalPages={setPdfTotal}
-          onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
-        />
+        <div style={wrapStyle}>
+          <PdfViewer
+            url={pdfUrl}
+            height="100%"
+            filename={`${doc.title}.pdf`}
+            onPageChange={setPdfPage}
+            onTotalPages={setPdfTotal}
+            onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
+          />
+        </div>
       );
     }
     if (docFileType === 'txt' || docFileType === 'md') {
       const token = localStorage.getItem('token');
       const rawUrl = `${pdfUrl}${pdfUrl.includes('?') ? '&' : '?'}token=${token}`;
       return (
-        <iframe
-          src={rawUrl}
-          title="原始文件"
-          style={{ flex: 1, border: 'none', width: '100%', height: '100%',
-            background: docFileType === 'md' ? '#fff' : '#1a1a1a',
-            color: '#e8e8e8' }}
-        />
+        <div style={wrapStyle}>
+          <iframe
+            src={rawUrl}
+            title="原始文件"
+            style={{ flex: 1, border: 'none', width: '100%', height: '100%',
+              background: docFileType === 'md' ? '#fff' : '#1a1a1a' }}
+          />
+        </div>
       );
     }
     return null;
