@@ -87,6 +87,8 @@ async def generate_xhs_post(
                     title=doc.title or "",
                     summary=summary,
                     key_points=key_points if isinstance(key_points, list) else [],
+                    doc_type=doc.doc_type or "science_pop",
+                    ip_info=doc.ip_info,
                 )
                 _log.info(f"[XHS] post={post_id} 生成图片prompt: {img_prompt[:100]}...")
                 url = await generate_cover_image(
@@ -165,6 +167,8 @@ async def generate_moments_post(
                     title=doc.title or "",
                     summary=summary,
                     key_points=key_points if isinstance(key_points, list) else [],
+                    doc_type=doc.doc_type or "science_pop",
+                    ip_info=doc.ip_info,
                 )
                 _log.info(f"[Moments] post={post_id} 生成图片prompt: {img_prompt[:100]}...")
                 url = await generate_cover_image(

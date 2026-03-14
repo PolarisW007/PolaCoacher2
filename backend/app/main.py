@@ -50,6 +50,9 @@ def _add_missing_columns(conn):
             "translation_status": "VARCHAR(20)",
             "translation_lang": "VARCHAR(10)",
             "translated_content": "TEXT",
+            "doc_type": "VARCHAR(20)",
+            "ip_info": "TEXT",
+            "error_detail": "TEXT",
         },
         "users": {
             "wechat_openid": "VARCHAR(128)",

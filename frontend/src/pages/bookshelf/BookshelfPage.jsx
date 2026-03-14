@@ -169,6 +169,8 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
       onSelect?.(doc.id);
     } else if (doc.status === 'pending_upload') {
       message.info('请先上传 PDF 文件');
+    } else if (doc.status === 'ready' && doc.lecture_slides?.length > 0) {
+      navigate(`/study/${doc.id}`);
     } else {
       navigate(`/reader/${doc.id}`);
     }
@@ -340,51 +342,41 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
         </div>
       )}
 
-      {doc.status === 'error' && doc.source_type !== 'book_search' && (
+      {(doc.status === 'error' || doc.status === 'pending_upload') && (
         <div style={{ marginTop: 8 }}>
+          {/* 错误原因提示 */}
+          {doc.error_detail && (
+            <div style={{
+              fontSize: 11, color: '#ff4d4f', background: '#fff2f0',
+              border: '1px solid #ffccc7', borderRadius: 4,
+              padding: '4px 8px', marginBottom: 6, lineHeight: 1.4,
+            }}>
+              {doc.error_detail}
+            </div>
+          )}
+          {/* 统一的重新处理按钮 — 后端自动判断是重跑AI还是重新下载 */}
           <Button
             type="primary"
-            danger
+            danger={doc.status === 'error'}
             size="small"
             icon={<ReloadOutlined />}
             block
+            style={{ marginBottom: 6 }}
             onClick={(e) => {
               e.stopPropagation();
-              docApi.reprocess(doc.id).then(() => {
-                message.success('已重新启动 AI 处理');
+              docApi.reprocess(doc.id).then((res) => {
+                message.success(res?.data?.msg || '已重新启动处理');
                 onRefresh?.();
               }).catch((err) => {
-                message.error(err.message || '重新处理失败');
+                const detail = err.response?.data?.detail || err.message || '重新处理失败';
+                message.error(detail);
               });
             }}
           >
-            重新处理
+            {doc.status === 'pending_upload' ? '重新自动下载' : '重新处理'}
           </Button>
-        </div>
-      )}
-
-      {(doc.status === 'pending_upload' || (doc.status === 'error' && doc.source_type === 'book_search')) && (
-        <div style={{ marginTop: 8 }}>
-          {doc.source_url?.includes('/md5/') && (
-            <Button
-              type="primary"
-              size="small"
-              icon={<ReloadOutlined />}
-              block
-              style={{ marginBottom: 6 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                docApi.retryDownload(doc.id).then(() => {
-                  message.success('正在重新下载 PDF，请稍候...');
-                  onRefresh?.();
-                }).catch((err) => {
-                  message.error(err.message || '重试失败');
-                });
-              }}
-            >
-              重新自动下载
-            </Button>
-          )}
+          {/* 手动上传兜底（下载失败时额外展示） */}
+          {(doc.status === 'pending_upload' || doc.source_type === 'book_search') && (
           <Upload
             accept=".pdf"
             showUploadList={false}
@@ -409,6 +401,7 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
               手动上传 PDF
             </Button>
           </Upload>
+          )}
         </div>
       )}
 

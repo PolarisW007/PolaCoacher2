@@ -32,6 +32,8 @@ class DocumentOut(BaseModel):
     status: str
     progress: float
     processing_step: str | None = None
+    error_detail: str | None = None
+    doc_type: str | None = None
     cover_url: str | None = None
     lecture_visibility: str = "private"
     play_count: int = 0

@@ -50,6 +50,13 @@ class Document(Base):
     translation_lang: Mapped[str | None] = mapped_column(String(10), nullable=True)     # zh|en
     translated_content: Mapped[dict | None] = mapped_column(JSON, nullable=True)        # [{chapter_id, paragraphs:[{id,text}]}]
 
+    # 文档类型与已知IP信息（由 AI 在处理阶段自动识别）
+    doc_type: Mapped[str | None] = mapped_column(String(20), nullable=True)   # academic|literature|history|science_pop|philosophy|tech_dev|known_ip
+    ip_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)          # {ip_name, ip_visual_style}
+
+    # 错误详情（处理失败时记录具体原因，展示给用户）
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     cover_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     lecture_visibility: Mapped[str] = mapped_column(String(10), default="private")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

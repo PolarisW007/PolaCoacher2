@@ -9,9 +9,11 @@ from sqlalchemy import select
 from app.core.database import async_session_factory
 from app.models.document import Document
 from app.services.ai_service import (
+    classify_document_type,
     classify_slide_style,
     extract_key_points,
     generate_cover_image,
+    generate_image_prompt,
     generate_lecture_text,
     generate_ppt_content,
     generate_slide_scene_image,
@@ -34,35 +36,61 @@ _FULL_TEXT_MAX_CHARS = 80_000   # 传给 AI 的全文最多 8 万字符
 
 def _extract_text_from_pdf(file_path: str) -> tuple[str, int, list[str]]:
     """
-    从 PDF 逐页流式提取文本，返回 (全文摘要, 页数, 逐页文本列表)。
-    全文拼接时最多取 _FULL_TEXT_MAX_CHARS 字符，避免大 PDF 撑爆内存。
+    从 PDF 逐页流式提取文本，返回 (全文, 页数, 逐页文本列表)。
+    主方案：pdfplumber；若提取内容为空（扫描版/图片PDF）自动降级到 pypdf。
     """
+    text_parts: list[str] = []
+    full_text_chunks: list[str] = []
+    total_chars = 0
+    page_count = 0
+
+    # ── 主方案：pdfplumber ──────────────────────────
     try:
         import pdfplumber
-        text_parts: list[str] = []
-        full_text_chunks: list[str] = []
-        total_chars = 0
-
         with pdfplumber.open(file_path) as pdf:
             page_count = len(pdf.pages)
             for page in pdf.pages:
                 t = page.extract_text() or ""
                 text_parts.append(t)
-                # 全文只累积到上限，超出部分丢弃（AI 接口有 token 限制，截断无影响）
                 if total_chars < _FULL_TEXT_MAX_CHARS:
                     take = min(len(t), _FULL_TEXT_MAX_CHARS - total_chars)
                     full_text_chunks.append(t[:take])
                     total_chars += take
-
-        full_text = "\n\n".join(full_text_chunks)
-        return full_text, page_count, text_parts
+        full_text = "\n\n".join(full_text_chunks).strip()
+        if full_text:
+            return full_text, page_count, text_parts
+        logger.warning(f"pdfplumber 提取内容为空（可能是扫描版PDF），尝试 pypdf 降级: {file_path}")
     except ImportError:
-        logger.warning("pdfplumber 未安装，使用基础文本提取")
-        text = _read_file_text(file_path)
-        return text[:_FULL_TEXT_MAX_CHARS], 1, [text]
+        logger.warning("pdfplumber 未安装，降级到 pypdf")
     except Exception as e:
-        logger.error(f"PDF 解析失败: {e}")
-        return "", 0, []
+        logger.warning(f"pdfplumber 解析失败: {e}，降级到 pypdf")
+
+    # ── 降级方案：pypdf ─────────────────────────────
+    try:
+        import pypdf
+        text_parts = []
+        full_text_chunks = []
+        total_chars = 0
+        with pypdf.PdfReader(file_path) as reader:
+            page_count = len(reader.pages)
+            for page in reader.pages:
+                t = page.extract_text() or ""
+                text_parts.append(t)
+                if total_chars < _FULL_TEXT_MAX_CHARS:
+                    take = min(len(t), _FULL_TEXT_MAX_CHARS - total_chars)
+                    full_text_chunks.append(t[:take])
+                    total_chars += take
+        full_text = "\n\n".join(full_text_chunks).strip()
+        if full_text:
+            logger.info(f"pypdf 降级提取成功: {page_count} 页")
+            return full_text, page_count, text_parts
+        logger.warning("pypdf 提取内容也为空（可能是图片/扫描版PDF）")
+    except ImportError:
+        logger.warning("pypdf 未安装")
+    except Exception as e:
+        logger.warning(f"pypdf 解析失败: {e}")
+
+    return "", page_count or 0, text_parts
 
 
 def _extract_text_from_docx(file_path: str) -> tuple[str, int, list[str]]:
@@ -141,6 +169,7 @@ async def process_document(doc_id: int) -> None:
                 doc.status = "error"
                 doc.progress = 0
                 doc.processing_step = None
+                doc.error_detail = "PDF文本提取失败：该文件可能是扫描版图片PDF，无法提取文字内容。请确认PDF是否包含可选中的文字。"
                 await db.commit()
                 logger.error(f"[Doc {doc_id}] 文本提取失败")
                 return
@@ -162,6 +191,19 @@ async def process_document(doc_id: int) -> None:
             )
             doc.summary = summary
             doc.key_points = key_points
+            doc.progress = 45.0
+            doc.processing_step = "识别文档类型"
+            await db.commit()
+
+            logger.info(f"[Doc {doc_id}] Step 3.5: 识别文档类型与IP信息")
+            doc_meta = await classify_document_type(
+                title=doc.title or "",
+                summary=summary[:400],
+                text_sample=text[:600],
+            )
+            doc.doc_type = doc_meta.get("doc_type", "science_pop")
+            doc.ip_info = {k: v for k, v in doc_meta.items() if k != "doc_type"} if doc_meta.get("ip_name") else None
+            logger.info(f"[Doc {doc_id}] 文档类型={doc.doc_type}, IP={doc_meta.get('ip_name')}")
             doc.progress = 55.0
             doc.processing_step = "生成PPT大纲"
             await db.commit()
@@ -175,7 +217,13 @@ async def process_document(doc_id: int) -> None:
 
             logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本")
             # page_texts 截断到 slide 数量，防止列表过长
-            slides = await _generate_all_lectures(ppt_content, page_texts[:MAX_SLIDES], doc_id=doc_id)
+            slides = await _generate_all_lectures(
+                ppt_content,
+                page_texts[:MAX_SLIDES],
+                doc_id=doc_id,
+                doc_type=doc.doc_type or "science_pop",
+                ip_info=doc.ip_info,
+            )
             doc.lecture_slides = slides
             doc.progress = 100.0
             doc.status = "ready"
@@ -197,6 +245,15 @@ async def process_document(doc_id: int) -> None:
                 if doc:
                     doc.status = "error"
                     doc.progress = 0
+                    doc.processing_step = None
+                    # 保存友好的错误原因
+                    err_str = str(e)
+                    if "API" in err_str or "timeout" in err_str.lower() or "connect" in err_str.lower():
+                        doc.error_detail = f"AI服务调用失败（网络超时或API异常），可稍后重新处理。详情：{err_str[:200]}"
+                    elif "token" in err_str.lower() or "quota" in err_str.lower():
+                        doc.error_detail = f"AI配额不足，请检查API Key余额后重新处理。"
+                    else:
+                        doc.error_detail = f"处理异常：{err_str[:300]}"
                     await db.commit()
             except Exception:
                 pass
@@ -256,7 +313,11 @@ async def _pregenerate_audio(doc_id: int, num_pages: int) -> None:
 
 
 async def _generate_all_lectures(
-    ppt_content: list[dict], page_texts: list[str], doc_id: int | None = None
+    ppt_content: list[dict],
+    page_texts: list[str],
+    doc_id: int | None = None,
+    doc_type: str = "science_pop",
+    ip_info: dict | None = None,
 ) -> list[dict]:
     """为每页 PPT 并行生成讲解文本 + 翻译（场景图异步后台生成）"""
     sem = asyncio.Semaphore(2)  # 降低并发，防止大文档处理时内存压力过大
@@ -268,7 +329,6 @@ async def _generate_all_lectures(
             translation = await translate_text(lecture, "zh", "en")
             title = slide.get("title", f"第 {idx + 1} 页")
             points = slide.get("points", [])
-            style = classify_slide_style(title, points, lecture)
             return {
                 "slide": idx + 1,
                 "title": title,
@@ -276,7 +336,7 @@ async def _generate_all_lectures(
                 "lecture_text": lecture,
                 "translation": translation,
                 "page_text": page_text[:500],
-                "scene_style": style,
+                "doc_type": doc_type,
                 "scene_image_url": None,  # 图片异步后台生成后写入
             }
 
@@ -294,7 +354,7 @@ async def _generate_all_lectures(
                 "lecture_text": "讲解生成失败，请重试。",
                 "translation": "",
                 "page_text": "",
-                "scene_style": "narrative",
+                "doc_type": doc_type,
                 "scene_image_url": None,
             })
         else:
@@ -302,30 +362,43 @@ async def _generate_all_lectures(
 
     # 触发场景图后台生成（不阻塞讲解返回）
     if doc_id is not None:
-        asyncio.create_task(_generate_all_slide_images(doc_id, slides))
+        asyncio.create_task(_generate_all_slide_images(doc_id, slides, doc_type=doc_type, ip_info=ip_info))
 
     return slides
 
 
-async def _generate_all_slide_images(doc_id: int, slides: list[dict]) -> None:
+async def _generate_all_slide_images(
+    doc_id: int,
+    slides: list[dict],
+    doc_type: str = "science_pop",
+    ip_info: dict | None = None,
+) -> None:
     """后台为所有讲解页生成场景图，逐页写回数据库"""
     # 等待 5 分钟再开始生成，避免与讲解生成/TTS 同时抢占资源
     await asyncio.sleep(300)
     sem = asyncio.Semaphore(1)  # 控制并发，一次只生成一张，避免内存爆炸
+    total = len(slides)
 
     async def _gen_one(idx: int, slide: dict) -> None:
         async with sem:
             title = slide.get("title", "")
             points = slide.get("points", [])
             lecture_text = slide.get("lecture_text", "")
+            # 优先使用 slide 自带的 doc_type（兼容旧数据），否则用参数传入
+            effective_doc_type = slide.get("doc_type") or doc_type
             try:
-                url = await generate_slide_scene_image(doc_id, idx, title, points, lecture_text)
+                url = await generate_slide_scene_image(
+                    doc_id, idx, title, points, lecture_text,
+                    doc_type=effective_doc_type,
+                    ip_info=ip_info,
+                    total_slides=total,
+                )
                 if url:
                     await _write_slide_image_url(doc_id, idx, url)
             except Exception as e:
                 logger.error(f"[Doc {doc_id}] Slide {idx} 场景图生成失败: {e}")
 
-    logger.info(f"[Doc {doc_id}] 开始后台生成 {len(slides)} 张场景图")
+    logger.info(f"[Doc {doc_id}] 开始后台生成 {total} 张场景图 (类型={doc_type})")
     await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(slides)])
     logger.info(f"[Doc {doc_id}] 全部场景图生成完成")
 
@@ -443,6 +516,8 @@ async def _generate_cover_for_doc(doc_id: int) -> None:
             summary = (doc.summary or "")[:300]
             key_points = doc.key_points or []
             kp_list = key_points if isinstance(key_points, list) else []
+            doc_type = doc.doc_type or "science_pop"
+            ip_info = doc.ip_info or None
 
             # 汇总讲解页要点
             all_slide_points: list[str] = []
@@ -454,14 +529,15 @@ async def _generate_cover_for_doc(doc_id: int) -> None:
                         if isinstance(pts, list):
                             all_slide_points.extend(pts)
 
-            from app.services.ai_service import generate_image_prompt
             img_prompt = await generate_image_prompt(
                 title=title,
                 summary=summary,
                 key_points=kp_list,
                 all_slide_points=all_slide_points,
+                doc_type=doc_type,
+                ip_info=ip_info,
             )
-            logger.info(f"[Doc {doc_id}] 封面图prompt: {img_prompt[:120]}...")
+            logger.info(f"[Doc {doc_id}] 封面图prompt (类型={doc_type}): {img_prompt[:120]}...")
 
             cover_filename = f"doc_{doc_id}_cover.png"
             cover_url = await generate_cover_image(

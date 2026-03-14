@@ -205,14 +205,158 @@ async def generate_moments_content(summary: str, key_points: list[str]) -> dict:
         return {"title": "读书笔记", "content": result[:200], "cover_prompt": "reading illustration"}
 
 
-async def generate_image_prompt(title: str, summary: str, key_points: list[str], all_slide_points: list[str] = None) -> str:
-    """基于文档内容生成适合小红书传播的、有科技感和未来感的图片 prompt"""
+# ──────────────────────────────────────────────
+# 文档类型 → 风格基底映射
+# ──────────────────────────────────────────────
+
+_DOC_TYPE_STYLE_BASE: dict[str, str] = {
+    "academic": (
+        "clean educational illustration style, textbook diagram aesthetic, "
+        "soft light background, precise linework, scientific visualization, "
+        "infographic quality, clear and informative layout"
+    ),
+    "literature": (
+        "literary book illustration style, atmospheric narrative scene, "
+        "painterly texture with visible brushstrokes, emotional depth, "
+        "muted but rich color palette, storytelling composition"
+    ),
+    "history": (
+        "historical illustration style, classical painting aesthetic, "
+        "period-accurate details, warm earth tones, documentary visual style, "
+        "museum quality artwork, historically evocative atmosphere"
+    ),
+    "science_pop": (
+        "National Geographic quality illustration, nature documentary aesthetic, "
+        "photorealistic natural environment, scientifically accurate depiction, "
+        "vibrant natural colors, awe-inspiring and educational visual"
+    ),
+    "philosophy": (
+        "surrealist philosophical illustration, symbolic visual metaphor, "
+        "René Magritte-inspired dreamlike realism, thought-provoking visual paradox, "
+        "deep conceptual imagery, muted sophisticated palette with accent highlights"
+    ),
+    "tech_dev": (
+        "modern tech illustration, flat design with subtle 3D depth, "
+        "isometric or semi-isometric perspective, clean code-inspired aesthetics, "
+        "dark navy or clean white background, professional software engineering visual"
+    ),
+    "known_ip": "",  # 动态填入，由 ip_info 决定
+}
+
+# 构图类型轮转序列
+_COMPOSITION_ROTATION = [
+    ("panoramic_scene", "Wide panoramic scene showing the overall environment and atmosphere"),
+    ("focal_subject",   "Single focal subject centered, background softly blurred, conveying the key concept"),
+    ("process_diagram", "Process flow or relationship diagram with arrows, nodes, and connections"),
+    ("symbolic_still",  "Meaningful symbolic still-life composition with metaphorical objects"),
+    ("split_comparison","Left-right split or before-after comparison layout"),
+]
+
+# 对比触发词
+_COMPARISON_KEYWORDS = {"对比", "vs", "区别", "差异", "比较", "versus", "compare", "difference", "优缺点", "利弊"}
+
+
+async def classify_document_type(title: str, summary: str, text_sample: str) -> dict:
+    """
+    调用 Qwen 一次性判断文档类型和已知IP信息。
+    返回: {
+        "doc_type": "academic"|"literature"|"history"|"science_pop"|"philosophy"|"tech_dev"|"known_ip",
+        "ip_name": str | None,
+        "ip_visual_style": str | None,
+    }
+    """
+    prompt = f"""分析以下文档，完成两项任务并以JSON格式返回：
+
+文档标题：《{title}》
+摘要：{summary[:400]}
+内容样本：{text_sample[:600]}
+
+任务1：判断文档属于以下哪种类型（只能选一个）：
+- academic：学术论文、技术报告、研究文献
+- literature：文学作品、小说、诗歌、散文、戏剧
+- history：历史书籍、人物传记、考古、人文社科
+- science_pop：科普读物、自然百科、医学健康
+- philosophy：哲学著作、社会学、心理学、思想类
+- tech_dev：编程教程、技术文档、软件架构、开发指南
+- known_ip：对应已知影视/游戏/书籍IP的学习材料（如对某部名著或知名作品的解读）
+
+任务2：判断该文档是否与某个知名IP作品（影视、游戏、经典名著）直接相关。
+如果是，填写IP名称和该IP的视觉风格描述（英文）；如果不是，填null。
+
+只输出JSON，格式如下：
+{{"doc_type": "类型", "ip_name": "IP名称或null", "ip_visual_style": "英文视觉风格描述或null"}}"""
+
+    result = await _call_qwen(
+        prompt,
+        system="You are a document analysis expert. Output ONLY valid JSON, no explanations.",
+        temperature=0.3,
+        max_tokens=200,
+    )
+    try:
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = _json.loads(cleaned)
+        doc_type = data.get("doc_type", "science_pop")
+        if doc_type not in _DOC_TYPE_STYLE_BASE:
+            doc_type = "science_pop"
+        return {
+            "doc_type": doc_type,
+            "ip_name": data.get("ip_name"),
+            "ip_visual_style": data.get("ip_visual_style"),
+        }
+    except Exception:
+        logger.warning(f"文档类型识别解析失败，降级为 science_pop，原始响应: {result[:200]}")
+        return {"doc_type": "science_pop", "ip_name": None, "ip_visual_style": None}
+
+
+def determine_composition_type(slide_idx: int, lecture_text: str, is_last: bool = False) -> tuple[str, str]:
+    """
+    决定当前页的构图类型。
+    返回 (composition_type, composition_desc)
+    """
+    # 结论/总结页强制用象征静物
+    if is_last:
+        return _COMPOSITION_ROTATION[3]
+
+    # 包含对比词汇时强制用对比构图
+    combined = lecture_text[:300].lower()
+    if any(kw in combined for kw in _COMPARISON_KEYWORDS):
+        return _COMPOSITION_ROTATION[4]
+
+    # 封面页（第0页）强制全景
+    if slide_idx == 0:
+        return _COMPOSITION_ROTATION[0]
+
+    return _COMPOSITION_ROTATION[slide_idx % len(_COMPOSITION_ROTATION)]
+
+
+async def generate_image_prompt(
+    title: str,
+    summary: str,
+    key_points: list[str],
+    all_slide_points: list[str] = None,
+    doc_type: str = "science_pop",
+    ip_info: dict | None = None,
+) -> str:
+    """基于文档内容和类型生成封面/分享图的英文画图 prompt"""
     kp_text = "\n".join(f"- {p}" for p in (key_points or [])[:8])
     slides_text = "\n".join(f"- {p}" for p in (all_slide_points or [])[:15])
 
+    style_base = _DOC_TYPE_STYLE_BASE.get(doc_type, _DOC_TYPE_STYLE_BASE["science_pop"])
+    if doc_type == "known_ip" and ip_info and ip_info.get("ip_visual_style"):
+        style_base = ip_info["ip_visual_style"]
+
+    ip_block = ""
+    if ip_info and ip_info.get("ip_name"):
+        ip_block = f"该文档对应知名IP作品：《{ip_info['ip_name']}》，请参考该IP的视觉风格。\n"
+
     meta_prompt = (
-        f"你是一位顶级AI绘画提示词工程师，擅长创作在小红书上高传播力的视觉内容。\n\n"
-        f"书名/标题：《{title}》\n"
+        f"你是一位顶级AI绘画提示词工程师。\n\n"
+        f"文档标题：《{title}》\n"
+        f"文档类型：{doc_type}\n"
+        f"风格基底：{style_base}\n"
+        f"{ip_block}"
         f"摘要：{summary[:300]}\n"
         f"核心要点：\n{kp_text}\n"
     )
@@ -221,12 +365,11 @@ async def generate_image_prompt(title: str, summary: str, key_points: list[str],
 
     meta_prompt += (
         f"\n请根据以上内容，生成一段英文的AI绘画提示词(prompt)，要求：\n"
-        f"1. 科技感、未来感强烈，色调以深蓝、青色、金色为主\n"
-        f"2. 融入与文档主题直接相关的视觉隐喻和场景互动（不要泛泛的书本/星光）\n"
-        f"3. 风格参考：赛博朋克数据流、全息投影、神经网络可视化、未来实验室等\n"
-        f"4. 构图有层次感，前景有具象元素，中景有科技场景，背景有氛围光效\n"
-        f"5. 适合小红书方形卡片展示，画面精致有质感\n"
-        f"6. 只输出英文prompt本身，不要任何解释和前缀，不超过150词\n"
+        f"1. 严格遵循风格基底（{style_base[:60]}...）\n"
+        f"2. 画面内容与文档主题强相关，使用具体的视觉隐喻，不要泛泛的书本/星光\n"
+        f"3. 构图采用宏观全景，适合方形封面展示，画面精致有质感\n"
+        f"4. 结尾加上：masterpiece, best quality, highly detailed, professional illustration\n"
+        f"5. 只输出英文prompt本身，不要任何解释和前缀，不超过150词\n"
     )
 
     result = await _call_qwen(
@@ -242,7 +385,7 @@ async def generate_image_prompt(title: str, summary: str, key_points: list[str],
 
 
 async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix: str, size: str = "1024*576") -> str | None:
-    """通用通义万象图片生成，返回持久化 URL 路径"""
+    """通用通义万象图片生成（wanx2.1-t2i-plus），返回持久化 URL 路径"""
     if not settings.DASHSCOPE_API_KEY:
         logger.warning("DASHSCOPE_API_KEY 未配置，跳过图片生成")
         return None
@@ -254,7 +397,7 @@ async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix
         dashscope.api_key = settings.DASHSCOPE_API_KEY
         rsp = await asyncio.to_thread(
             ImageSynthesis.call,
-            model="wanx2.1-t2i-turbo",
+            model="wanx2.1-t2i-plus",
             prompt=prompt,
             n=1,
             size=size,
@@ -278,75 +421,93 @@ async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix
 
 
 async def generate_cover_image(prompt: str, save_dir: str, filename: str) -> str | None:
-    """使用通义万象生成封面图"""
+    """使用通义万象生成封面图（1024×1024 方形）"""
     return await _call_wanx_image(prompt, save_dir, filename, "/covers", size="1024*1024")
 
 
 # ──────────────────────────────────────────────
-# 讲解场景图：分类 → 生成 prompt → 生成图片
+# 讲解场景图 v2：七类型 + 五构图轮转
 # ──────────────────────────────────────────────
 
-# 学术/理工判断关键词
-_ACADEMIC_KEYWORDS = {
-    "算法", "数学", "物理", "化学", "公式", "定理", "逻辑",
-    "机器学习", "深度学习", "神经网络", "矩阵", "向量", "微积分",
-    "函数", "统计", "概率", "数据结构", "计算机", "编程", "代码",
-    "architecture", "algorithm", "theorem", "formula", "network",
-    "transformer", "gradient", "tensor", "graph", "complexity",
-    "论文", "研究", "实验", "模型", "框架", "优化", "训练",
-}
-
-
+# 保留旧函数签名供内部兼容调用（内部直接用 v2 实现）
 def classify_slide_style(title: str, points: list[str], lecture_text: str) -> str:
-    """判断页面风格：'academic'（赛博朋克结构图）或 'narrative'（3D吉卜力风）"""
+    """兼容旧调用：返回 doc_type 字符串（使用关键词粗分类）"""
     combined = (title + " " + " ".join(points) + " " + lecture_text[:300]).lower()
-    score = sum(1 for kw in _ACADEMIC_KEYWORDS if kw.lower() in combined)
-    return "academic" if score >= 2 else "narrative"
+    tech_kws = {"算法", "公式", "定理", "机器学习", "深度学习", "神经网络", "architecture", "algorithm",
+                "theorem", "transformer", "gradient", "tensor", "论文", "研究", "实验", "模型", "框架"}
+    tech_score = sum(1 for kw in tech_kws if kw in combined)
+    code_kws = {"代码", "编程", "函数", "数据结构", "api", "数据库", "开发", "部署"}
+    code_score = sum(1 for kw in code_kws if kw in combined)
+    hist_kws = {"朝代", "历史", "传记", "古代", "史料", "考古"}
+    hist_score = sum(1 for kw in hist_kws if kw in combined)
+    phil_kws = {"哲学", "思想", "意识", "存在", "批判", "伦理"}
+    phil_score = sum(1 for kw in phil_kws if kw in combined)
+
+    if tech_score >= 2:
+        return "academic"
+    if code_score >= 2:
+        return "tech_dev"
+    if hist_score >= 1:
+        return "history"
+    if phil_score >= 1:
+        return "philosophy"
+    return "literature"
 
 
-async def generate_slide_scene_prompt(
-    title: str,
-    points: list[str],
+async def generate_slide_scene_prompt_v2(
+    doc_type: str,
+    ip_info: dict | None,
+    composition_type: str,
+    composition_desc: str,
+    slide_title: str,
+    slide_points: list[str],
     lecture_text: str,
-    style: str,
 ) -> str:
-    """根据风格生成场景图的英文绘画提示词"""
-    points_str = "、".join(points[:4]) if points else title
-    text_snippet = lecture_text[:400]
+    """v2：根据文档类型 + 构图类型生成高质量场景图提示词"""
+    style_base = _DOC_TYPE_STYLE_BASE.get(doc_type, _DOC_TYPE_STYLE_BASE["science_pop"])
+    if doc_type == "known_ip" and ip_info and ip_info.get("ip_visual_style"):
+        style_base = ip_info["ip_visual_style"]
 
-    if style == "academic":
-        system_prompt = (
-            "You are a cyberpunk technical illustration prompt engineer. "
-            "Create vivid, detailed English prompts for structure diagrams in cyberpunk style. "
-            "Output ONLY the English prompt, no explanations, max 120 words."
+    ip_block = ""
+    if ip_info and ip_info.get("ip_name"):
+        ip_block = (
+            f"This content is from the known IP work: {ip_info['ip_name']}. "
+            f"Visual style reference: {ip_info.get('ip_visual_style', '')}. "
         )
-        user_prompt = (
-            f"Create a cyberpunk-style structural diagram illustration prompt for the concept:\n"
-            f"Title: {title}\nKey points: {points_str}\nContext: {text_snippet[:200]}\n\n"
-            f"Requirements: neon glowing circuit diagrams, holographic data flows, dark background with electric blue/purple/cyan accents, "
-            f"geometric nodes and connections representing the concept, floating mathematical symbols, futuristic lab aesthetic. "
-            f"The image should visually explain the structure or process described."
-        )
-    else:
-        system_prompt = (
-            "You are a Studio Ghibli 3D animation scene prompt engineer. "
-            "Create warm, detailed English prompts for narrative scenes in Ghibli 3D style. "
-            "Output ONLY the English prompt, no explanations, max 120 words."
-        )
-        user_prompt = (
-            f"Create a Studio Ghibli 3D style scene illustration prompt for this narrative content:\n"
-            f"Title: {title}\nKey points: {points_str}\nContext: {text_snippet[:200]}\n\n"
-            f"Requirements: warm sunlight, lush natural environments, whimsical magical details, "
-            f"3D rendered in Ghibli aesthetic (like Howl's Moving Castle / Spirited Away style), "
-            f"soft color palette, intricate background details, characters or symbolic objects that represent the story/concept. "
-            f"Cinematic wide shot, high quality 3D render."
-        )
+
+    points_str = "; ".join(slide_points[:4]) if slide_points else slide_title
+    text_snippet = lecture_text[:300]
+
+    user_prompt = f"""Create an illustration prompt for an educational lecture slide.
+
+Document type: {doc_type}
+Style base: {style_base}
+{ip_block}
+Composition type: {composition_type} — {composition_desc}
+
+Slide title: {slide_title}
+Key points: {points_str}
+Lecture context: {text_snippet}
+
+Requirements:
+1. Use the specified style base as the visual foundation
+2. Visually represent the key points on this slide in a way readers can understand intuitively
+3. Follow the {composition_type} composition strictly
+4. Include specific visual elements directly referenced by the content (avoid generic imagery)
+5. End with: masterpiece, best quality, highly detailed, professional illustration, cinematic lighting
+6. Output ONLY the English prompt, max 150 words"""
+
+    system_prompt = (
+        "You are an expert AI art director for educational content. "
+        "Create detailed, content-relevant English image prompts. "
+        "Output ONLY the English prompt, no explanations."
+    )
 
     result = await _call_qwen(
         user_prompt,
         system=system_prompt,
         temperature=0.85,
-        max_tokens=200,
+        max_tokens=250,
     )
     cleaned = result.strip().strip('"').strip("'")
     if cleaned.startswith("```"):
@@ -360,9 +521,13 @@ async def generate_slide_scene_image(
     title: str,
     points: list[str],
     lecture_text: str,
+    doc_type: str = "",
+    ip_info: dict | None = None,
+    total_slides: int = 0,
 ) -> str | None:
     """
-    为单页讲解生成场景图：自动分类风格 → 生成 prompt → 调用万象 API → 持久化
+    为单页讲解生成场景图（v2）：
+    文档类型 + 构图轮转 → 生成 prompt → 调用万象 Plus → 持久化
     返回图片 URL（如 /slide_images/doc_2_slide_0.png），失败返回 None
     """
     from pathlib import Path
@@ -370,22 +535,34 @@ async def generate_slide_scene_image(
     filename = f"doc_{doc_id}_slide_{slide_idx}.png"
     filepath = settings.SLIDE_IMAGES_DIR / filename
 
-    # 已有则直接返回
     if filepath.exists() and filepath.stat().st_size > 1000:
         logger.info(f"[Doc {doc_id}] Slide {slide_idx} 场景图已存在，复用")
         return f"/slide_images/{filename}"
 
-    style = classify_slide_style(title, points, lecture_text)
-    logger.info(f"[Doc {doc_id}] Slide {slide_idx} 场景图风格: {style}")
+    # 若未传入文档类型，使用关键词粗分类兜底
+    effective_doc_type = doc_type if doc_type else classify_slide_style(title, points, lecture_text)
 
-    img_prompt = await generate_slide_scene_prompt(title, points, lecture_text, style)
-    logger.info(f"[Doc {doc_id}] Slide {slide_idx} prompt: {img_prompt[:80]}...")
+    is_last = (total_slides > 0 and slide_idx == total_slides - 1)
+    composition_type, composition_desc = determine_composition_type(slide_idx, lecture_text, is_last)
+
+    logger.info(f"[Doc {doc_id}] Slide {slide_idx} | 类型={effective_doc_type} | 构图={composition_type}")
+
+    img_prompt = await generate_slide_scene_prompt_v2(
+        doc_type=effective_doc_type,
+        ip_info=ip_info,
+        composition_type=composition_type,
+        composition_desc=composition_desc,
+        slide_title=title,
+        slide_points=points,
+        lecture_text=lecture_text,
+    )
+    logger.info(f"[Doc {doc_id}] Slide {slide_idx} prompt: {img_prompt[:100]}...")
 
     url = await _call_wanx_image(
         img_prompt,
         str(settings.SLIDE_IMAGES_DIR),
         filename,
         "/slide_images",
-        size="1024*576",  # 16:9 横幅场景图
+        size="1024*576",
     )
     return url
