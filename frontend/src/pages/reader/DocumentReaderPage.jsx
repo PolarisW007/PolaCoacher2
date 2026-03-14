@@ -31,6 +31,7 @@ import {
 } from '@ant-design/icons';
 import { docApi, historyApi } from '../../api/documents';
 import PdfViewer from '../../components/PdfViewer';
+import PdfTranslatePanel from '../../components/PdfTranslatePanel';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -188,6 +189,7 @@ export default function DocumentReaderPage() {
   // ── 视图模式 ──────────────────────────────────────────────
   const [mainView, setMainView] = useState('text'); // 'text' | 'pdf'
   const [langMode, setLangMode] = useState('original'); // 'original' | 'translated' | 'bilingual'
+  const [pdfTranslate, setPdfTranslate] = useState(false); // PDF 对照翻译模式
 
   // ── 阅读设置 ──────────────────────────────────────────────
   const [prefs, setPrefs] = useState(loadPrefs);
@@ -759,6 +761,20 @@ export default function DocumentReaderPage() {
                     PDF
                   </Button>
                 </Tooltip>
+                {/* 对照翻译按钮：仅在 PDF 模式显示 */}
+                {mainView === 'pdf' && (
+                  <Tooltip title={pdfTranslate ? '关闭对照翻译' : '开启左右对照翻译'}>
+                    <Button
+                      type={pdfTranslate ? 'primary' : 'text'}
+                      size="small"
+                      icon={<SwapOutlined />}
+                      style={{ color: pdfTranslate ? undefined : bgConfig.text }}
+                      onClick={() => setPdfTranslate(v => !v)}
+                    >
+                      对照
+                    </Button>
+                  </Tooltip>
+                )}
                 <Tooltip title="下载 PDF">
                   <Button
                     type="text" size="small"
@@ -1654,15 +1670,40 @@ export default function DocumentReaderPage() {
 
     if (docFileType === 'pdf') {
       return (
-        <div style={wrapStyle}>
-          <PdfViewer
-            url={pdfUrl}
-            height="100%"
-            filename={`${doc.title}.pdf`}
-            onPageChange={setPdfPage}
-            onTotalPages={setPdfTotal}
-            onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
-          />
+        <div style={{ ...wrapStyle, flexDirection: 'row' }}>
+          {/* 左侧 PDF 原文 */}
+          <div style={{
+            flex: pdfTranslate ? '0 0 50%' : '1 1 100%',
+            minWidth: 0,
+            height: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            transition: 'flex 0.25s ease',
+          }}>
+            <PdfViewer
+              url={pdfUrl}
+              height="100%"
+              filename={`${doc.title}.pdf`}
+              onPageChange={setPdfPage}
+              onTotalPages={setPdfTotal}
+              onGoToRef={(fn) => { pdfGoToRef.current = fn; }}
+            />
+          </div>
+          {/* 右侧对照译文 */}
+          {pdfTranslate && (
+            <div style={{
+              flex: '0 0 50%',
+              minWidth: 0,
+              height: '100%',
+              overflow: 'hidden',
+            }}>
+              <PdfTranslatePanel
+                docId={id}
+                page={pdfPage || 1}
+                targetLang={doc?.language === 'zh' ? 'en' : 'zh'}
+              />
+            </div>
+          )}
         </div>
       );
     }
