@@ -47,15 +47,22 @@ export default function DocumentReader() {
   const [targetLang, setTargetLang] = useState('zh');
 
   const pageStartTime = useRef(Date.now());
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   const fetchDoc = useCallback(async () => {
     try {
       const res = await docApi.get(id);
+      if (!isMountedRef.current) return;
       setDoc(res.data);
     } catch {
-      message.error('文档加载失败');
+      if (isMountedRef.current) message.error('文档加载失败');
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, [id]);
 
@@ -169,8 +176,10 @@ export default function DocumentReader() {
       if (lectureTimeoutRef.current) clearTimeout(lectureTimeoutRef.current);
 
       lectureTimerRef.current = setInterval(async () => {
+        if (!isMountedRef.current) { clearInterval(lectureTimerRef.current); return; }
         try {
           const res = await docApi.get(id);
+          if (!isMountedRef.current) return;
           setDoc(res.data);
           if (res.data.lecture_slides && res.data.lecture_slides.length > 0) {
             clearInterval(lectureTimerRef.current);
@@ -183,7 +192,7 @@ export default function DocumentReader() {
       }, 3000);
       lectureTimeoutRef.current = setTimeout(() => {
         if (lectureTimerRef.current) { clearInterval(lectureTimerRef.current); lectureTimerRef.current = null; }
-        setGenerating(false);
+        if (isMountedRef.current) setGenerating(false);
       }, 120000);
     } catch (err) {
       message.error(err.message || '生成失败');
@@ -199,13 +208,14 @@ export default function DocumentReader() {
     setChatLoading(true);
     try {
       const res = await docApi.chat(id, { question, session_id: sessionId });
+      if (!isMountedRef.current) return;
       const data = res.data;
       if (data.session_id && !sessionId) setSessionId(data.session_id);
       setChatMessages((prev) => [...prev, { role: 'assistant', content: data.answer }]);
     } catch {
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: '抱歉，回答失败，请重试。' }]);
+      if (isMountedRef.current) setChatMessages((prev) => [...prev, { role: 'assistant', content: '抱歉，回答失败，请重试。' }]);
     } finally {
-      setChatLoading(false);
+      if (isMountedRef.current) setChatLoading(false);
     }
   };
 

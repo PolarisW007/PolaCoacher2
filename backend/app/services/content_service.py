@@ -136,6 +136,7 @@ def extract_structured_from_pdf(
         # ── 用 pymupdf 提取图片 ────────────────────────
         page_images: dict[int, list[dict]] = {}   # page_num(1-based) -> [{src, width, height, y0, hash}]
         if fitz_available and image_save_dir:
+            doc_fitz = None
             try:
                 doc_fitz = pymupdf.open(file_path)
                 for page_idx in range(len(doc_fitz)):
@@ -162,16 +163,20 @@ def extract_structured_from_pdf(
                             with open(img_path, "wb") as f:
                                 f.write(img_bytes)
                         src = f"{image_url_prefix}/{img_filename}"
-                        # 获取图片在页面上的 y 坐标（用于插入到正确位置）
                         rects = fitz_page.get_image_rects(xref)
                         y0 = rects[0].y0 if rects else 0
                         page_images[page_num].append({
                             "src": src, "width": w, "height": h, "y0": y0, "hash": img_hash,
                         })
-                doc_fitz.close()
             except Exception as e:
                 logger.warning(f"pymupdf 图片提取失败: {e}, 跳过图片")
                 page_images = {}
+            finally:
+                if doc_fitz is not None:
+                    try:
+                        doc_fitz.close()
+                    except Exception:
+                        pass
 
         # ── 用 pdfplumber 提取文字 ─────────────────────
         with pdfplumber.open(file_path) as pdf:

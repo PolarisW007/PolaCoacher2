@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import hashlib
 import logging
 import uuid
@@ -86,11 +87,19 @@ def _synthesize_audio_sync(text: str, voice: str, file_path: str) -> None:
         f.write(audio)
 
 
-_audio_hash_cache: dict[str, str] = {}
+_CACHE_MAX_SIZE = 10000
+_audio_hash_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
 
 
 def _text_hash(text: str, voice: str) -> str:
     return hashlib.md5(f"{voice}:{text}".encode()).hexdigest()
+
+
+def _cache_put(key: str, value: str) -> None:
+    _audio_hash_cache[key] = value
+    _audio_hash_cache.move_to_end(key)
+    while len(_audio_hash_cache) > _CACHE_MAX_SIZE:
+        _audio_hash_cache.popitem(last=False)
 
 
 async def _synthesize_audio(text: str, voice: str) -> str:
@@ -107,14 +116,14 @@ async def _synthesize_audio(text: str, voice: str) -> str:
     file_path = settings.AUDIO_DIR / filename
 
     if file_path.exists() and file_path.stat().st_size > 0:
-        _audio_hash_cache[h] = filename
+        _cache_put(h, filename)
         logger.info(f"TTS 命中文件缓存: {filename}")
         return filename
 
     if not settings.DASHSCOPE_API_KEY:
         logger.warning("DASHSCOPE_API_KEY 未配置，生成空白音频文件")
         file_path.write_bytes(b"")
-        _audio_hash_cache[h] = filename
+        _cache_put(h, filename)
         return filename
 
     try:
@@ -123,7 +132,7 @@ async def _synthesize_audio(text: str, voice: str) -> str:
         logger.error(f"TTS 合成失败: {e}")
         raise HTTPException(status_code=502, detail="语音合成服务暂不可用")
 
-    _audio_hash_cache[h] = filename
+    _cache_put(h, filename)
     return filename
 
 
@@ -290,8 +299,14 @@ async def preload_audio(
         else:
             to_trigger.append(page)
 
+    _preload_sem = asyncio.Semaphore(3)
+
+    async def _throttled_synth(doc_id, page):
+        async with _preload_sem:
+            await _background_synthesize_page_by_doc(doc_id, page)
+
     for page in to_trigger:
-        asyncio.create_task(_background_synthesize_page_by_doc(req.doc_id, page))
+        asyncio.create_task(_throttled_synth(req.doc_id, page))
 
     return ApiResponse.ok(
         data=PreloadResponse(

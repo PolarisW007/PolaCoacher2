@@ -170,6 +170,11 @@ export default function DocumentStudyPage() {
   const startTimeRef = useRef(Date.now());
   const lectureTimerRef = useRef(null);
   const lectureTimeoutRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const audioListenersRef = useRef([]);
+  const autoPlayTimeoutRef = useRef(null);
+  const sharePollRef = useRef(null);
+  const completionPollRef = useRef(null);
 
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -229,11 +234,12 @@ export default function DocumentStudyPage() {
   const fetchDoc = useCallback(async () => {
     try {
       const res = await docApi.get(id);
+      if (!isMountedRef.current) return;
       setDoc(res.data);
     } catch {
-      message.error('文档加载失败');
+      if (isMountedRef.current) message.error('文档加载失败');
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, [id]);
 
@@ -347,11 +353,25 @@ export default function DocumentStudyPage() {
 
   // Cleanup on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+      isMountedRef.current = false;
+      // Remove all audio event listeners
+      if (audioRef.current) {
+        audioListenersRef.current.forEach(([event, handler]) => {
+          audioRef.current?.removeEventListener(event, handler);
+        });
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      audioListenersRef.current = [];
       if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
       if (lectureTimerRef.current) clearInterval(lectureTimerRef.current);
       if (lectureTimeoutRef.current) clearTimeout(lectureTimeoutRef.current);
+      if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
+      if (sharePollRef.current) clearInterval(sharePollRef.current);
+      if (completionPollRef.current) clearInterval(completionPollRef.current);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
 
@@ -440,7 +460,7 @@ export default function DocumentStudyPage() {
     if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
     if (!sentences.length) return;
     sentenceTimerRef.current = setInterval(() => {
-      if (!audio || audio.paused) return;
+      if (!isMountedRef.current || !audio || audio.paused) return;
       const dur = audio.duration;
       const cur = audio.currentTime;
       if (!dur || !isFinite(dur)) return;
@@ -459,7 +479,12 @@ export default function DocumentStudyPage() {
 
   const stopAudio = () => {
     if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
+    if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
     if (audioRef.current) {
+      audioListenersRef.current.forEach(([event, handler]) => {
+        audioRef.current?.removeEventListener(event, handler);
+      });
+      audioListenersRef.current = [];
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       audioRef.current = null;
@@ -468,23 +493,45 @@ export default function DocumentStudyPage() {
   };
 
   const setupAudioListeners = useCallback((audio) => {
-    audio.addEventListener('timeupdate', () => setAudioProgress(audio.currentTime));
-    audio.addEventListener('loadedmetadata', () => setAudioDuration(audio.duration));
-    audio.addEventListener('durationchange', () => {
+    // Clear previous listeners
+    audioListenersRef.current.forEach(([event, handler]) => {
+      audio.removeEventListener(event, handler);
+    });
+    audioListenersRef.current = [];
+
+    const addListener = (event, handler) => {
+      audio.addEventListener(event, handler);
+      audioListenersRef.current.push([event, handler]);
+    };
+
+    addListener('timeupdate', () => {
+      if (!isMountedRef.current) return;
+      setAudioProgress(audio.currentTime);
+    });
+    addListener('loadedmetadata', () => {
+      if (!isMountedRef.current) return;
+      setAudioDuration(audio.duration);
+    });
+    addListener('durationchange', () => {
+      if (!isMountedRef.current) return;
       if (audio.duration && isFinite(audio.duration)) setAudioDuration(audio.duration);
     });
-    audio.addEventListener('ended', () => {
+    addListener('ended', () => {
+      if (!isMountedRef.current) return;
       setIsPlaying(false);
       setCurrentSentenceIdx(-1);
       if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
-      // 标记当前页已听完
       markPageListened(currentPage);
       if (autoPlayNext && currentPage < slides.length - 1) {
         setCurrentPage(p => p + 1);
-        setTimeout(() => handleAutoPlay(), 600);
+        if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
+        autoPlayTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) handleAutoPlay();
+        }, 600);
       }
     });
-    audio.addEventListener('error', () => {
+    addListener('error', () => {
+      if (!isMountedRef.current) return;
       message.error('音频播放失败');
       setIsPlaying(false);
     });
@@ -533,6 +580,7 @@ export default function DocumentStudyPage() {
   };
 
   const handleAutoPlay = async () => {
+    if (!isMountedRef.current) return;
     const nextSlide = slides[currentPage + 1] || slides[currentPage];
     if (!nextSlide?.lecture_text) return;
     setAudioLoading(true);
@@ -543,6 +591,7 @@ export default function DocumentStudyPage() {
         doc_id: parseInt(id),
         page: currentPage,
       });
+      if (!isMountedRef.current) return;
       const rawUrl = res.data?.audio_url || res.data?.url;
       if (!rawUrl) { setAudioLoading(false); return; }
       const audioUrl = ttsApi.resolveAudioUrl(rawUrl);
@@ -552,10 +601,11 @@ export default function DocumentStudyPage() {
       audioRef.current = audio;
       setupAudioListeners(audio);
       await audio.play();
+      if (!isMountedRef.current) { audio.pause(); return; }
       setIsPlaying(true);
       startSentenceTracking(audio);
     } catch { /* silent */ } finally {
-      setAudioLoading(false);
+      if (isMountedRef.current) setAudioLoading(false);
     }
   };
 
@@ -708,21 +758,24 @@ export default function DocumentStudyPage() {
       const post = res.data;
       setSharePost(post);
 
-      // 封面图异步生成，轮询等待（最多 60s）
       if (post && !post.cover_url && post.id) {
         const prefix = type === 'xhs' ? 'xhs' : 'moments';
         const coverPath = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/covers/${prefix}_${post.id}.png`;
         let tries = 0;
-        const poll = setInterval(async () => {
+        if (sharePollRef.current) clearInterval(sharePollRef.current);
+        sharePollRef.current = setInterval(async () => {
+          if (!isMountedRef.current) { clearInterval(sharePollRef.current); return; }
           tries++;
           try {
             const r = await fetch(coverPath, { method: 'HEAD' });
             if (r.ok) {
-              setSharePost(prev => prev ? { ...prev, cover_url: `/covers/${prefix}_${post.id}.png`, image_status: 'ready' } : prev);
-              clearInterval(poll);
+              if (isMountedRef.current) {
+                setSharePost(prev => prev ? { ...prev, cover_url: `/covers/${prefix}_${post.id}.png`, image_status: 'ready' } : prev);
+              }
+              clearInterval(sharePollRef.current);
             }
           } catch { /* ignore */ }
-          if (tries >= 30) clearInterval(poll);
+          if (tries >= 30) clearInterval(sharePollRef.current);
         }, 2000);
       }
     } catch (err) {
@@ -766,22 +819,22 @@ export default function DocumentStudyPage() {
       const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
 
       if (data?.cover_ready && data?.cover_url) {
-        // 封面图已就绪，直接显示
         setCompletionCoverUrl(`${BASE}${data.cover_url}`);
       } else if (data?.expected_cover_url) {
-        // 后台异步生成中，轮询（最多 60 秒，每 2 秒一次）
         const pollUrl = `${BASE}${data.expected_cover_url}`;
         let tries = 0;
-        const poll = setInterval(async () => {
+        if (completionPollRef.current) clearInterval(completionPollRef.current);
+        completionPollRef.current = setInterval(async () => {
+          if (!isMountedRef.current) { clearInterval(completionPollRef.current); return; }
           tries++;
           try {
             const r = await fetch(pollUrl, { method: 'HEAD' });
             if (r.ok) {
-              setCompletionCoverUrl(pollUrl + '?t=' + Date.now());
-              clearInterval(poll);
+              if (isMountedRef.current) setCompletionCoverUrl(pollUrl + '?t=' + Date.now());
+              clearInterval(completionPollRef.current);
             }
           } catch { /* ignore */ }
-          if (tries >= 30) clearInterval(poll);  // 最多 60s
+          if (tries >= 30) clearInterval(completionPollRef.current);
         }, 2000);
       }
     } catch (err) {

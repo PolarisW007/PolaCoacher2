@@ -147,11 +147,13 @@ function BgImage({ url, thumb }) {
   const [src, setSrc] = useState(thumb || url);
 
   useEffect(() => {
-    setSrc(thumb || url); // 切换背景时先显示 thumb
+    let cancelled = false;
+    setSrc(thumb || url);
     if (!thumb || thumb === url) return;
     const img = new Image();
-    img.onload = () => setSrc(url); // 原图加载完毕后替换
+    img.onload = () => { if (!cancelled) setSrc(url); };
     img.src = url;
+    return () => { cancelled = true; };
   }, [url, thumb]);
 
   return (
@@ -315,6 +317,12 @@ export default function DocumentReaderPage() {
   }, [pageGroups.length, isDualPage]);
   const chapterRefs = useRef({});   // {chapterId: DOM}
   const startTimeRef = useRef(Date.now());
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   // ─────────────────────────────────────────────────────────
   // 当前 BG 配置
@@ -328,9 +336,10 @@ export default function DocumentReaderPage() {
   const fetchDoc = useCallback(async () => {
     try {
       const res = await docApi.get(id);
+      if (!isMountedRef.current) return;
       setDoc(res.data);
-    } catch { message.error('文档加载失败'); }
-    finally { setLoading(false); }
+    } catch { if (isMountedRef.current) message.error('文档加载失败'); }
+    finally { if (isMountedRef.current) setLoading(false); }
   }, [id]);
 
   useEffect(() => { fetchDoc(); }, [fetchDoc]);
@@ -342,6 +351,7 @@ export default function DocumentReaderPage() {
     setContentLoading(true);
     try {
       const res = await docApi.getContent(id);
+      if (!isMountedRef.current) return;
       const d = res.data;
       setChapters(d.chapters || []);
       setParagraphs(d.paragraphs || []);
@@ -350,7 +360,7 @@ export default function DocumentReaderPage() {
       setTranslationLang(d.translation_lang);
       if (d.translation_status === 'translating') startTranslationPoll();
     } catch { /* silent */ }
-    finally { setContentLoading(false); }
+    finally { if (isMountedRef.current) setContentLoading(false); }
   }, [id]);
 
   useEffect(() => {
@@ -363,6 +373,7 @@ export default function DocumentReaderPage() {
   const fetchTranslation = useCallback(async () => {
     try {
       const res = await docApi.getTranslation(id);
+      if (!isMountedRef.current) return null;
       const d = res.data;
       setTranslatedChapters(d.translated_chapters || []);
       setTranslationStatus(d.translation_status);
@@ -565,12 +576,13 @@ export default function DocumentReaderPage() {
     setChatLoading(true);
     try {
       const res = await docApi.chat(id, { question: q, session_id: sessionId });
+      if (!isMountedRef.current) return;
       const d = res.data;
       if (d.session_id && !sessionId) setSessionId(d.session_id);
       setChatMessages((p) => [...p, { role: 'assistant', content: d.answer }]);
     } catch {
-      setChatMessages((p) => [...p, { role: 'assistant', content: '回答失败，请重试。' }]);
-    } finally { setChatLoading(false); }
+      if (isMountedRef.current) setChatMessages((p) => [...p, { role: 'assistant', content: '回答失败，请重试。' }]);
+    } finally { if (isMountedRef.current) setChatLoading(false); }
   };
 
   // ─────────────────────────────────────────────────────────

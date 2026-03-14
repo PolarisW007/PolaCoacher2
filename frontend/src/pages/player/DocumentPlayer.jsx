@@ -73,6 +73,9 @@ export default function DocumentPlayer() {
   const startTimeRef = useRef(null);
   const thumbnailListRef = useRef(null);
   const sentenceTimerRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const audioListenersRef = useRef([]);
+  const autoPlayTimeoutRef = useRef(null);
 
   const slides = useMemo(() => doc?.lecture_slides || [], [doc]);
   const slide = slides[currentPage] || {};
@@ -153,12 +156,20 @@ export default function DocumentPlayer() {
   }, [currentPage]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (audioRef.current) {
+        audioListenersRef.current.forEach(([event, handler]) => {
+          audioRef.current?.removeEventListener(event, handler);
+        });
         audioRef.current.pause();
         audioRef.current = null;
       }
+      audioListenersRef.current = [];
       if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
+      if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
 
@@ -176,7 +187,7 @@ export default function DocumentPlayer() {
     if (!sentences.length) return;
 
     sentenceTimerRef.current = setInterval(() => {
-      if (!audio || audio.paused) return;
+      if (!isMountedRef.current || !audio || audio.paused) return;
       const dur = audio.duration;
       const cur = audio.currentTime;
       if (!dur || !isFinite(dur)) return;
@@ -211,7 +222,12 @@ export default function DocumentPlayer() {
 
   const stopAudio = () => {
     if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
+    if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
     if (audioRef.current) {
+      audioListenersRef.current.forEach(([event, handler]) => {
+        audioRef.current?.removeEventListener(event, handler);
+      });
+      audioListenersRef.current = [];
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       audioRef.current = null;
@@ -220,25 +236,43 @@ export default function DocumentPlayer() {
   };
 
   const setupAudioListeners = useCallback((audio) => {
-    audio.addEventListener('timeupdate', () => {
+    audioListenersRef.current.forEach(([event, handler]) => {
+      audio.removeEventListener(event, handler);
+    });
+    audioListenersRef.current = [];
+
+    const addListener = (event, handler) => {
+      audio.addEventListener(event, handler);
+      audioListenersRef.current.push([event, handler]);
+    };
+
+    addListener('timeupdate', () => {
+      if (!isMountedRef.current) return;
       setAudioProgress(audio.currentTime);
     });
-    audio.addEventListener('loadedmetadata', () => {
+    addListener('loadedmetadata', () => {
+      if (!isMountedRef.current) return;
       setAudioDuration(audio.duration);
     });
-    audio.addEventListener('durationchange', () => {
+    addListener('durationchange', () => {
+      if (!isMountedRef.current) return;
       if (audio.duration && isFinite(audio.duration)) setAudioDuration(audio.duration);
     });
-    audio.addEventListener('ended', () => {
+    addListener('ended', () => {
+      if (!isMountedRef.current) return;
       setIsPlaying(false);
       setCurrentSentenceIdx(-1);
       if (sentenceTimerRef.current) clearInterval(sentenceTimerRef.current);
       if (autoPlayNext && currentPage < slides.length - 1) {
         setCurrentPage((p) => p + 1);
-        setTimeout(() => handleAutoPlay(), 600);
+        if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
+        autoPlayTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) handleAutoPlay();
+        }, 600);
       }
     });
-    audio.addEventListener('error', () => {
+    addListener('error', () => {
+      if (!isMountedRef.current) return;
       message.error('音频播放失败');
       setIsPlaying(false);
     });
@@ -295,6 +329,7 @@ export default function DocumentPlayer() {
   };
 
   const handleAutoPlay = async () => {
+    if (!isMountedRef.current) return;
     const nextSlide = slides[currentPage + 1] || slides[currentPage];
     if (!nextSlide?.lecture_text) return;
 
@@ -306,6 +341,7 @@ export default function DocumentPlayer() {
         doc_id: id,
         page: currentPage,
       });
+      if (!isMountedRef.current) return;
       const rawUrl = res.data?.audio_url || res.data?.url;
       if (!rawUrl) { setAudioLoading(false); return; }
       const audioUrl = ttsApi.resolveAudioUrl(rawUrl);
@@ -316,10 +352,11 @@ export default function DocumentPlayer() {
       setupAudioListeners(audio);
 
       await audio.play();
+      if (!isMountedRef.current) { audio.pause(); return; }
       setIsPlaying(true);
       startSentenceTracking(audio);
     } catch { /* ignore */ } finally {
-      setAudioLoading(false);
+      if (isMountedRef.current) setAudioLoading(false);
     }
   };
 

@@ -999,6 +999,12 @@ export default function BookshelfPage() {
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const pollingRef = useRef(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   const [addDocModalOpen, setAddDocModalOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
@@ -1016,6 +1022,7 @@ export default function BookshelfPage() {
       const params = { page: 1, page_size: 100 };
       if (searchText) params.search = searchText;
       const res = await docApi.list(params);
+      if (!isMountedRef.current) return [];
       const items = res.data.items;
       setDocs(items);
       items
