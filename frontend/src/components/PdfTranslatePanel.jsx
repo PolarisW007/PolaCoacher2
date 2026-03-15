@@ -80,21 +80,23 @@ export default function PdfTranslatePanel({ docId, page, targetLang = 'zh', bgCo
   const [loadedPage, setLoadedPage] = useState(null);
   const [totalPages, setTotalPages] = useState(null);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [cached, setCached] = useState(false);
   const abortRef = useRef(null);
 
   const load = useCallback(async (pg) => {
     if (!docId || !pg) return;
-    // 取消上一个请求
     if (abortRef.current) abortRef.current.cancel?.();
 
     setLoading(true);
     setError('');
+    setCached(false);
     try {
       const res = await fetchPageTranslation(docId, pg, targetLang);
       const data = res?.data?.data || res?.data || {};
       setBlocks(data.blocks || []);
       setTotalPages(data.total_pages || null);
       setLoadedPage(pg);
+      setCached(!!data.cached);
     } catch (e) {
       if (e?.code === 'ERR_CANCELED') return;
       setError(e?.response?.data?.detail || e.message || '翻译失败');
@@ -132,6 +134,9 @@ export default function PdfTranslatePanel({ docId, page, targetLang = 'zh', bgCo
             <span style={{ color: '#888', marginLeft: 4 }}>
               第 {loadedPage} / {totalPages} 页
             </span>
+          )}
+          {cached && (
+            <span style={{ color: '#52c41a', fontSize: 10, marginLeft: 4 }}>已缓存</span>
           )}
         </span>
         <Tooltip title={showOriginal ? '隐藏原文' : '显示原文对照'}>
