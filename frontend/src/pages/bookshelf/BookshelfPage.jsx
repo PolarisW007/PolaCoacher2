@@ -313,9 +313,9 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
             percent={Math.round(doc.progress || 0)}
             size="small"
             strokeColor={{ '0%': '#2dce89', '100%': '#52c41a' }}
-            format={(p) => (doc.status === 'pending' ? '排队中' : doc.status === 'importing' ? 'PDF下载中...' : `${p}%`)}
+            format={(p) => (doc.status === 'pending' ? '排队中' : doc.status === 'importing' ? (doc.processing_step || 'PDF下载中...') : `${p}%`)}
           />
-          {doc.status === 'processing' && (
+          {(doc.status === 'processing' || (doc.status === 'importing' && doc.processing_step)) && (
             <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
               {doc.processing_step || getProgressLabel(doc.progress || 0)}
             </Text>
@@ -569,6 +569,7 @@ function AddDocModal({ open, onClose, onUploadDone }) {
   const [bookSearching, setBookSearching] = useState(false);
   const [importingBooks, setImportingBooks] = useState(new Set());
   const [uploading, setUploading] = useState(false);
+  const [zlibInfo, setZlibInfo] = useState(null); // { configured, session_valid, login_blocked }
 
   const resetState = () => {
     setMode(null);
@@ -577,12 +578,19 @@ function AddDocModal({ open, onClose, onUploadDone }) {
     setBookSearching(false);
     setImportingBooks(new Set());
     setUploading(false);
+    setZlibInfo(null);
   };
 
   const handleClose = () => {
     resetState();
     onClose();
   };
+
+  useEffect(() => {
+    if (mode === 'book') {
+      docApi.zlibStatus().then((res) => setZlibInfo(res.data)).catch(() => {});
+    }
+  }, [mode]);
 
   const handleUpload = async (file) => {
     setUploading(true);
@@ -732,6 +740,15 @@ function AddDocModal({ open, onClose, onUploadDone }) {
       <Text type="secondary" style={{ display: 'block', marginBottom: 10, fontSize: 12 }}>
         搜索全球开放书库，PDF 格式将自动下载并进行 AI 分析
       </Text>
+      {zlibInfo && (
+        <div style={{
+          fontSize: 11, marginBottom: 10, padding: '4px 10px', borderRadius: 6,
+          background: zlibInfo.configured ? (zlibInfo.session_valid ? 'rgba(45,206,137,0.08)' : zlibInfo.login_blocked ? 'rgba(245,54,92,0.08)' : 'rgba(251,175,64,0.08)') : 'rgba(150,150,150,0.08)',
+          color: zlibInfo.configured ? (zlibInfo.session_valid ? '#2dce89' : zlibInfo.login_blocked ? '#f5365c' : '#fba940') : '#999',
+        }}>
+          Z-Library：{!zlibInfo.configured ? '未配置凭据' : zlibInfo.session_valid ? '✓ 已连接' : zlibInfo.login_blocked ? '✗ 凭据无效' : '⏳ 待登录'}
+        </div>
+      )}
       <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
         <Input
           placeholder="输入书名、作者或 ISBN 搜索（支持中英文）"

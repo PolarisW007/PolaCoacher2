@@ -385,7 +385,7 @@ async def generate_image_prompt(
 
 
 async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix: str, size: str = "1024*576") -> str | None:
-    """通用通义万象图片生成（wanx2.1-t2i-plus），返回持久化 URL 路径"""
+    """通用通义万象图片生成（wanx2.1-t2i-plus），流式写入磁盘，内存峰值 ≤ 5MB"""
     if not settings.DASHSCOPE_API_KEY:
         logger.warning("DASHSCOPE_API_KEY 未配置，跳过图片生成")
         return None
@@ -393,6 +393,8 @@ async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix
         import dashscope
         from dashscope import ImageSynthesis
         from pathlib import Path
+
+        _stream_chunk = settings.STREAM_CHUNK_BYTES
 
         dashscope.api_key = settings.DASHSCOPE_API_KEY
         rsp = await asyncio.to_thread(
@@ -408,9 +410,11 @@ async def _call_wanx_image(prompt: str, save_dir: str, filename: str, url_prefix
             save_path.mkdir(parents=True, exist_ok=True)
             filepath = save_path / filename
             async with httpx.AsyncClient(timeout=60) as client:
-                img_resp = await client.get(image_url)
-                img_resp.raise_for_status()
-                filepath.write_bytes(img_resp.content)
+                async with client.stream("GET", image_url) as img_resp:
+                    img_resp.raise_for_status()
+                    with open(filepath, "wb") as f:
+                        async for chunk in img_resp.aiter_bytes(_stream_chunk):
+                            f.write(chunk)
             return f"{url_prefix}/{filename}"
         else:
             logger.warning(f"通义万象图片生成失败: {getattr(rsp, 'message', 'unknown')}")

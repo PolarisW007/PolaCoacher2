@@ -221,8 +221,8 @@ async def ensure_zlib_session() -> bool:
 
 async def download_zlib_book(md5: str) -> bytes | None:
     """
-    通过 Z-Library 下载书籍 PDF。
-    流程：登录 → 查找书籍页面 → 获取下载链接 → 下载文件
+    通过 Z-Library 下载书籍 PDF（兼容旧调用方式，返回 bytes）。
+    新代码应优先使用 download_zlib_book_to_file 流式版本。
     """
     if not await ensure_zlib_session():
         logger.info(f"[ZLib] No valid session, cannot download md5={md5[:8]}")
@@ -232,7 +232,6 @@ async def download_zlib_book(md5: str) -> bytes | None:
 
     for domain in _ZLIB_DOMAINS:
         try:
-            # 1. 获取书籍页面
             book_url = f"https://{domain}/md5/{md5}"
             async with httpx.AsyncClient(
                 timeout=20, follow_redirects=True, verify=False, cookies=cookies
@@ -244,7 +243,6 @@ async def download_zlib_book(md5: str) -> bytes | None:
                 import re
                 text = r.text
 
-                # 2. 提取下载链接
                 dl_match = re.search(
                     r'href="(/dl/[^"]+)"[^>]*>.*?Download', text, re.S
                 ) or re.search(r'href="(/book/[^"]+/download)"', text)
@@ -257,7 +255,6 @@ async def download_zlib_book(md5: str) -> bytes | None:
                 dl_url = f"https://{domain}{dl_path}"
                 logger.info(f"[ZLib] Downloading: {dl_url[:80]}")
 
-                # 3. 下载文件
                 r2 = await c.get(dl_url, headers={"User-Agent": _UA}, follow_redirects=True)
                 if (
                     r2.status_code == 200
@@ -277,3 +274,74 @@ async def download_zlib_book(md5: str) -> bytes | None:
 
     logger.info(f"[ZLib] All download attempts failed for md5={md5[:8]}")
     return None
+
+
+async def download_zlib_book_to_file(md5: str, save_path) -> bool:
+    """
+    流式版本：通过 Z-Library 下载书籍 PDF 并写入 save_path。
+    内存峰值 ≤ 5MB（按 _STREAM_CHUNK 分块写入）。
+    """
+    from pathlib import Path
+    from app.core.config import settings
+
+    _stream_chunk = settings.STREAM_CHUNK_BYTES
+    _max_dl = settings.MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+    save_path = Path(save_path)
+
+    if not await ensure_zlib_session():
+        logger.info(f"[ZLib] No valid session, cannot download md5={md5[:8]}")
+        return False
+
+    cookies = _cred_store.get_cookies()
+
+    for domain in _ZLIB_DOMAINS:
+        try:
+            book_url = f"https://{domain}/md5/{md5}"
+            async with httpx.AsyncClient(
+                timeout=20, follow_redirects=True, verify=False, cookies=cookies
+            ) as c:
+                r = await c.get(book_url, headers={"User-Agent": _UA})
+                if r.status_code != 200:
+                    continue
+
+                import re
+                text = r.text
+                dl_match = re.search(
+                    r'href="(/dl/[^"]+)"[^>]*>.*?Download', text, re.S
+                ) or re.search(r'href="(/book/[^"]+/download)"', text)
+
+                if not dl_match:
+                    continue
+
+                dl_path = dl_match.group(1)
+                dl_url = f"https://{domain}{dl_path}"
+                logger.info(f"[ZLib] Stream downloading: {dl_url[:80]}")
+
+                async with c.stream("GET", dl_url, headers={"User-Agent": _UA}, follow_redirects=True) as resp:
+                    if resp.status_code != 200:
+                        continue
+                    total = 0
+                    header_bytes = b""
+                    with open(save_path, "wb") as f:
+                        async for chunk in resp.aiter_bytes(_stream_chunk):
+                            if not header_bytes:
+                                header_bytes = chunk[:8]
+                            total += len(chunk)
+                            if total > _max_dl:
+                                save_path.unlink(missing_ok=True)
+                                logger.warning(f"[ZLib] File too large, aborted at {total}")
+                                return False
+                            f.write(chunk)
+
+                    if total > 1024 and header_bytes[:4] == b"%PDF":
+                        logger.info(f"[ZLib] Stream download success: {total} bytes")
+                        return True
+
+                    save_path.unlink(missing_ok=True)
+                    logger.warning(f"[ZLib] Non-PDF: size={total} head={header_bytes[:8]!r}")
+
+        except Exception as e:
+            logger.debug(f"[ZLib] Stream error on {domain}: {e}")
+            save_path.unlink(missing_ok=True)
+
+    return False

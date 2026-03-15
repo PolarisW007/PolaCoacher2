@@ -19,6 +19,7 @@ export const docApi = {
   bookImportRetry: (taskId) => client.post(`/documents/book-import/${taskId}/retry`),
   retryDownload: (docId) => client.post(`/documents/${docId}/retry-download`),
   checkIsbn: (isbn) => client.get(`/documents/check-isbn/${isbn}`),
+  zlibStatus: () => client.get('/documents/zlib-status'),
   list: (params) => client.get('/documents/list', { params }),
   get: (id) => client.get(`/documents/${id}`),
   delete: (id) => client.delete(`/documents/${id}`),

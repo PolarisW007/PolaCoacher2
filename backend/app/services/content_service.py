@@ -186,6 +186,13 @@ def _extract_with_pymupdf(
                            "type": "image", "src": src, "width": w, "height": h,
                            "text": f"[图片 {w}x{h}]", "page": page})
 
+    from app.core.config import settings as _cfg
+    _max_img_size = _cfg.MAX_IMAGE_SIZE_BYTES
+    _max_img_count = _cfg.MAX_IMAGES_PER_DOC
+    _max_img_total = _cfg.MAX_IMAGE_TOTAL_BYTES
+    _img_total_bytes = 0
+    _img_saved_count = 0
+
     doc = fitz.open(file_path)
     try:
         for page_idx in range(len(doc)):
@@ -193,15 +200,19 @@ def _extract_with_pymupdf(
             page_num = page_idx + 1
             page_w = page.rect.width
 
-            # ── 提取图片 ────────────────────────────────
-            if image_save_dir:
+            # ── 提取图片（带大小/数量限制）──────────────
+            if image_save_dir and _img_saved_count < _max_img_count:
                 for img_info in page.get_images(full=True):
+                    if _img_saved_count >= _max_img_count or _img_total_bytes >= _max_img_total:
+                        break
                     xref = img_info[0]
                     try:
                         base_img = doc.extract_image(xref)
                         if not base_img:
                             continue
                         img_bytes = base_img["image"]
+                        if len(img_bytes) > _max_img_size:
+                            continue
                         w_i = base_img.get("width", 0)
                         h_i = base_img.get("height", 0)
                         ext = base_img.get("ext", "png")
@@ -210,10 +221,16 @@ def _extract_with_pymupdf(
                         img_hash = hashlib.md5(img_bytes[:512]).hexdigest()[:12]
                         if img_hash in seen_image_hashes:
                             continue
+                        _img_total_bytes += len(img_bytes)
+                        if _img_total_bytes > _max_img_total:
+                            del img_bytes
+                            break
                         img_fn = f"{img_hash}.{ext}"
                         img_path = pathlib.Path(image_save_dir) / img_fn
                         if not img_path.exists():
                             img_path.write_bytes(img_bytes)
+                        del img_bytes
+                        _img_saved_count += 1
                         _add_image(f"{image_url_prefix}/{img_fn}", w_i, h_i, page_num, img_hash)
                     except Exception:
                         pass
@@ -439,10 +456,11 @@ def _generate_virtual_chapters(paragraphs: list[dict]) -> list[dict]:
 
 
 def _extract_structured_plain(file_path: str) -> tuple[list[dict], list[dict]]:
-    """纯文本 fallback"""
+    """纯文本 fallback（限制读取量防止超大文件 OOM）"""
+    from app.core.config import settings as _cfg
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
+            text = f.read(_cfg.PLAIN_READ_MAX_BYTES)
     except Exception:
         return [], []
 

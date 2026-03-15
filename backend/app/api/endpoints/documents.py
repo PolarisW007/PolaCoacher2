@@ -40,6 +40,10 @@ documents_static_router = APIRouter(tags=["文档"])
 _CHUNK_SIZE = settings.CHUNK_SIZE_MB * 1024 * 1024  # 50 MB per chunk
 _MAX_BYTES = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024  # 200 MB hard limit
 
+# ── 全局下载并发控制（防止多个大 PDF 同时下载撑爆内存/IO）──
+_DOWNLOAD_SEM = asyncio.Semaphore(settings.DOWNLOAD_CONCURRENCY)
+_STREAM_CHUNK = settings.STREAM_CHUNK_BYTES  # 5MB
+
 
 async def _stream_to_disk(upload_file: UploadFile, dest: Path) -> int:
     """
@@ -188,23 +192,41 @@ async def book_search(
     encoded_query = quote(query)
     UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
+    _search_timeout = settings.SEARCH_TIMEOUT
+    _proxy_retries = settings.PROXY_MAX_RETRIES
+    _proxy_backoff = settings.PROXY_RETRY_BACKOFF
+
     def make_proxy_urls(target_url: str) -> list[str]:
         return [
             f"https://api.codetabs.com/v1/proxy/?quest={quote(target_url, safe='')}",
             f"https://api.allorigins.win/raw?url={quote(target_url, safe='')}",
+            f"https://api.cors.lol/?url={quote(target_url, safe='')}",
             target_url,
         ]
 
     async def fetch_html(target_url: str, label: str = "") -> str:
+        """抓取搜索页 HTML，每个代理 URL 自带重试 + 退避"""
         for url in make_proxy_urls(target_url):
-            try:
-                async with _httpx.AsyncClient(timeout=30, follow_redirects=True, verify=False) as c:
-                    resp = await c.get(url, headers={"User-Agent": UA})
-                    if resp.status_code == 200 and '/md5/' in resp.text:
-                        _log.info(f"[BookSearch] {label} Success via {url[:60]}...")
-                        return resp.text
-            except Exception as e:
-                _log.debug(f"[BookSearch] {label} Failed {url[:50]}: {e}")
+            for attempt in range(_proxy_retries + 1):
+                try:
+                    async with _httpx.AsyncClient(timeout=_search_timeout, follow_redirects=True, verify=False) as c:
+                        resp = await c.get(url, headers={"User-Agent": UA})
+                        if resp.status_code == 200 and '/md5/' in resp.text:
+                            _log.info(f"[BookSearch] {label} Success via {url[:60]}...")
+                            return resp.text
+                        if resp.status_code in (500, 502, 503, 522) and attempt < _proxy_retries:
+                            wait = _proxy_backoff[min(attempt, len(_proxy_backoff) - 1)]
+                            _log.debug(f"[BookSearch] {label} {url[:50]} HTTP {resp.status_code}, retry in {wait}s")
+                            await asyncio.sleep(wait)
+                            continue
+                        break
+                except Exception as e:
+                    if attempt < _proxy_retries:
+                        wait = _proxy_backoff[min(attempt, len(_proxy_backoff) - 1)]
+                        _log.debug(f"[BookSearch] {label} {url[:50]} error: {e}, retry in {wait}s")
+                        await asyncio.sleep(wait)
+                    else:
+                        _log.debug(f"[BookSearch] {label} Failed {url[:50]}: {e}")
         return ""
 
     _log.info(f"[BookSearch] query='{query}'")
@@ -368,17 +390,19 @@ async def book_import(
     return ApiResponse.ok(data={"task_id": task.id, "document_id": doc.id}, msg="导入任务已创建，正在自动下载 PDF")
 
 
-async def _try_download_pdf(
+async def _try_download_pdf_to_file(
     md5: str,
+    save_path: Path,
     _ua: str,
     _log,
     _httpx,
     _re,
     _quote,
     book_source: str = "lgrsnf",
-) -> bytes | None:
+) -> bool:
     """
-    多策略下载 PDF，返回 bytes 或 None。
+    多策略下载 PDF，流式写入 save_path，内存峰值 ≤ 5MB。
+    返回 True 表示下载成功并通过 PDF 头验证。
 
     策略顺序（优先直连，减少代理依赖）：
       1. library.lol 直连（最稳定的 Libgen 镜像）
@@ -390,16 +414,20 @@ async def _try_download_pdf(
     """
     import asyncio as _asyncio
 
+    _max_dl = settings.MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+
     PROXIES = [
         lambda u: f"https://api.codetabs.com/v1/proxy/?quest={_quote(u, safe='')}",
         lambda u: f"https://api.allorigins.win/raw?url={_quote(u, safe='')}",
+        lambda u: f"https://api.cors.lol/?url={_quote(u, safe='')}",
     ]
 
-    # Libgen 直连镜像（按稳定性排序）
     LIBGEN_MIRRORS = [
         f"https://library.lol/main/{md5}",
         f"https://libgen.rs/book/index.php?md5={md5}",
         f"https://libgen.st/book/index.php?md5={md5}",
+        f"https://libgen.is/book/index.php?md5={md5}",
+        f"https://libgen.gs/book/index.php?md5={md5}",
         f"https://libgen.li/ads.php?md5={md5}",
     ]
 
@@ -410,26 +438,19 @@ async def _try_download_pdf(
         ) as c:
             return await c.get(url)
 
-    def _is_pdf(content: bytes) -> bool:
-        return len(content) > 4096 and content[:4] == b"%PDF"
-
     async def _fetch_and_extract_download_link(page_url: str, source_name: str) -> str | None:
-        """从书籍详情页中提取实际的 PDF 下载链接"""
         try:
             resp = await _get(page_url, timeout=20)
             if resp.status_code != 200:
                 return None
             text = resp.text
-            # library.lol 的下载链接格式
             m = _re.search(r'href="(https?://[^"]*(?:get\.php|/dl/|download)[^"]*)"', text)
             if m:
                 return m.group(1)
-            # libgen.rs/libgen.st 的 get.php 格式
             m = _re.search(r'href="(get\.php\?md5=[a-f0-9]+[^"]*)"', text)
             if m:
                 base = page_url.rsplit("/", 2)[0]
                 return f"{base}/{m.group(1)}"
-            # ads.php 中的 get.php 链接
             m = _re.search(r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', text)
             if m:
                 return f"https://libgen.li/{m.group(1)}"
@@ -437,60 +458,74 @@ async def _try_download_pdf(
             _log.debug(f"[BookImport] {source_name} 页面解析失败: {ex}")
         return None
 
-    async def _download_url_direct(download_url: str, source_name: str) -> bytes | None:
-        """直接下载指定 URL，返回 PDF bytes 或 None"""
+    async def _stream_download_to_file(download_url: str, source_name: str) -> bool:
+        """流式下载到 save_path，内存峰值 ≤ _STREAM_CHUNK (5MB)"""
         try:
-            _log.info(f"[BookImport] {source_name} 直连下载: {download_url[:100]}")
-            resp = await _get(download_url, timeout=120)
-            if resp.status_code == 200 and _is_pdf(resp.content):
-                _log.info(f"[BookImport] {source_name} 下载成功! size={len(resp.content)}")
-                return resp.content
-            _log.debug(f"[BookImport] {source_name} 返回非PDF: status={resp.status_code} size={len(resp.content)} head={resp.content[:8]!r}")
+            _log.info(f"[BookImport] {source_name} 流式下载: {download_url[:100]}")
+            async with _httpx.AsyncClient(
+                timeout=120, follow_redirects=True, verify=False,
+                headers={"User-Agent": _ua}
+            ) as c:
+                async with c.stream("GET", download_url) as resp:
+                    if resp.status_code != 200:
+                        _log.debug(f"[BookImport] {source_name} status={resp.status_code}")
+                        return False
+                    total = 0
+                    header_bytes = b""
+                    with open(save_path, "wb") as f:
+                        async for chunk in resp.aiter_bytes(_STREAM_CHUNK):
+                            if not header_bytes:
+                                header_bytes = chunk[:8]
+                            total += len(chunk)
+                            if total > _max_dl:
+                                _log.warning(f"[BookImport] {source_name} 超过大小限制 {settings.MAX_DOWNLOAD_SIZE_MB}MB")
+                                save_path.unlink(missing_ok=True)
+                                return False
+                            f.write(chunk)
+                    if total < 4096 or not header_bytes[:4] == b"%PDF":
+                        _log.debug(f"[BookImport] {source_name} 非PDF: size={total} head={header_bytes[:8]!r}")
+                        save_path.unlink(missing_ok=True)
+                        return False
+                    _log.info(f"[BookImport] {source_name} 流式下载成功! size={total}")
+                    return True
         except Exception as ex:
-            _log.debug(f"[BookImport] {source_name} 直连失败: {ex}")
-        return None
+            _log.debug(f"[BookImport] {source_name} 流式下载失败: {ex}")
+            save_path.unlink(missing_ok=True)
+            return False
 
-    async def _download_url_with_proxy_fallback(download_url: str, source_name: str) -> bytes | None:
-        """直连失败后用代理重试"""
-        result = await _download_url_direct(download_url, source_name)
-        if result:
-            return result
+    async def _stream_download_with_proxy_fallback(download_url: str, source_name: str) -> bool:
+        if await _stream_download_to_file(download_url, source_name):
+            return True
         for make_proxy in PROXIES:
             proxy_url = make_proxy(download_url)
             try:
                 _log.info(f"[BookImport] {source_name} 代理重试: {proxy_url[:100]}")
-                resp = await _get(proxy_url, timeout=120)
-                if resp.status_code == 200 and _is_pdf(resp.content):
-                    _log.info(f"[BookImport] {source_name} 代理下载成功! size={len(resp.content)}")
-                    return resp.content
+                if await _stream_download_to_file(proxy_url, f"{source_name}(proxy)"):
+                    return True
             except Exception as ex:
                 _log.debug(f"[BookImport] {source_name} 代理失败: {ex}")
-        return None
+        return False
 
-    # ── 策略 1-3：直连各 Libgen 镜像 ────────────────
-    mirror_names = ["library.lol", "libgen.rs", "libgen.st", "libgen.li"]
-    for mirror_url, mirror_name in zip(LIBGEN_MIRRORS[:3], mirror_names[:3]):
+    # ── 策略 1-5：直连各 Libgen 镜像 ────────────────
+    mirror_names = ["library.lol", "libgen.rs", "libgen.st", "libgen.is", "libgen.gs", "libgen.li"]
+    for mirror_url, mirror_name in zip(LIBGEN_MIRRORS[:-1], mirror_names[:-1]):
         _log.info(f"[BookImport] 尝试 {mirror_name} 直连: md5={md5[:8]}")
         dl_link = await _fetch_and_extract_download_link(mirror_url, mirror_name)
         if dl_link:
-            result = await _download_url_direct(dl_link, mirror_name)
-            if result:
-                return result
-        await _asyncio.sleep(1)  # 避免触发限速
+            if await _stream_download_to_file(dl_link, mirror_name):
+                return True
+        await _asyncio.sleep(1)
 
-    # ── 策略 4：libgen.li/ads.php（直连 + 代理兜底） ─
-    _log.info(f"[BookImport] 策略4: libgen.li ads.php md5={md5[:8]}")
-    ads_url = LIBGEN_MIRRORS[3]
+    # ── 策略 6：libgen.li/ads.php（直连 + 代理兜底） ─
+    _log.info(f"[BookImport] 策略6: libgen.li ads.php md5={md5[:8]}")
+    ads_url = LIBGEN_MIRRORS[-1]
     for attempt in range(2):
         if attempt > 0:
             await _asyncio.sleep(8)
-        # 先直连
         dl_link = await _fetch_and_extract_download_link(ads_url, "libgen.li直连")
         if dl_link:
-            result = await _download_url_direct(dl_link, "libgen.li")
-            if result:
-                return result
-        # 再用代理
+            if await _stream_download_to_file(dl_link, "libgen.li"):
+                return True
         for make_proxy in PROXIES:
             try:
                 resp = await _get(make_proxy(ads_url), timeout=30)
@@ -498,17 +533,16 @@ async def _try_download_pdf(
                     m = _re.search(r'(?:href="|)(get\.php\?md5=[a-f0-9]+&key=[^"&\s]+)', resp.text)
                     if m:
                         get_url = f"https://libgen.li/{m.group(1)}"
-                        result = await _download_url_with_proxy_fallback(get_url, "libgen.li(proxy)")
-                        if result:
-                            return result
+                        if await _stream_download_with_proxy_fallback(get_url, "libgen.li(proxy)"):
+                            return True
                 elif "max_user_connections" in resp.text:
                     _log.warning("[BookImport] Libgen DB过载，等待后重试")
                     break
             except Exception as ex:
                 _log.debug(f"[BookImport] ads.php 代理失败: {ex}")
 
-    # ── 策略 5：Anna's Archive md5 页面（直连 + 代理） ─
-    _log.info(f"[BookImport] 策略5: Anna's Archive md5={md5[:8]}")
+    # ── 策略 7：Anna's Archive md5 页面（直连 + 代理） ─
+    _log.info(f"[BookImport] 策略7: Anna's Archive md5={md5[:8]}")
     for anna_domain in ["https://annas-archive.gl", "https://annas-archive.org"]:
         anna_url = f"{anna_domain}/md5/{md5}"
         for fetch_fn in [
@@ -521,7 +555,6 @@ async def _try_download_pdf(
                 if resp.status_code != 200 or len(resp.content) < 3000:
                     continue
                 text = resp.text
-                # 提取 libgen 下载链接
                 for pattern in [
                     r'libgen\.li/ads\.php\?md5=([a-f0-9]{32})',
                     r'libgen\.rs/book/index\.php\?md5=([a-f0-9]{32})',
@@ -530,41 +563,37 @@ async def _try_download_pdf(
                         if alt_md5 == md5:
                             continue
                         _log.info(f"[BookImport] Anna's Archive 找到备用 md5={alt_md5[:8]}")
-                        for mirror_url, mirror_name in zip(LIBGEN_MIRRORS[:2], mirror_names[:2]):
+                        for mirror_url, mirror_name in zip(LIBGEN_MIRRORS[:3], mirror_names[:3]):
                             alt_url = mirror_url.replace(md5, alt_md5)
                             dl_link = await _fetch_and_extract_download_link(alt_url, mirror_name)
                             if dl_link:
-                                result = await _download_url_direct(dl_link, mirror_name)
-                                if result:
-                                    return result
-                # 提取页面上的直接下载链接
+                                if await _stream_download_to_file(dl_link, mirror_name):
+                                    return True
                 for dl_pattern in [
                     r'href="(https?://[^"]*libgen[^"]*(?:get\.php|/dl/)[^"]*)"',
                     r'href="(https?://library\.lol/[^"]+)"',
                 ]:
                     m = _re.search(dl_pattern, text)
                     if m:
-                        result = await _download_url_with_proxy_fallback(m.group(1), "Anna直链")
-                        if result:
-                            return result
+                        if await _stream_download_with_proxy_fallback(m.group(1), "Anna直链"):
+                            return True
                 break
             except Exception as ex:
                 _log.debug(f"[BookImport] Anna's Archive 失败: {ex}")
 
-    # ── 策略 6：Z-Library ────────────────────────────
+    # ── 策略 8：Z-Library（流式写入）────────────────
     if book_source == "zlib":
-        _log.info(f"[BookImport] 策略6: Z-Library md5={md5[:8]}")
+        _log.info(f"[BookImport] 策略8: Z-Library md5={md5[:8]}")
         try:
-            from app.services.zlib_service import download_zlib_book
-            zlib_content = await download_zlib_book(md5)
-            if zlib_content:
-                _log.info(f"[BookImport] Z-Library 下载成功 size={len(zlib_content)}")
-                return zlib_content
+            from app.services.zlib_service import download_zlib_book_to_file
+            if await download_zlib_book_to_file(md5, save_path):
+                _log.info(f"[BookImport] Z-Library 流式下载成功")
+                return True
         except Exception as ex:
             _log.debug(f"[BookImport] Z-Library 下载异常: {ex}")
 
     _log.warning(f"[BookImport] 所有下载策略均失败 md5={md5}")
-    return None
+    return False
 
 
 async def _download_and_process_pdf(
@@ -573,7 +602,9 @@ async def _download_and_process_pdf(
     md5: str | None,
     book_source: str = "lgrsnf",
 ):
-    """从 Libgen/ZLib 下载 PDF 并启动 AI 处理（模块级函数，供 import 和 retry 使用）"""
+    """从 Libgen/ZLib 下载 PDF 并启动 AI 处理。
+    全局下载信号量控制并发，流式写入磁盘，内存峰值 ≤ 5MB。
+    """
     from app.core.database import async_session_factory
     import httpx as _httpx
     import re as _re
@@ -585,75 +616,69 @@ async def _download_and_process_pdf(
 
     _log = logging.getLogger(__name__)
 
-    async with async_session_factory() as s:
+    async with _DOWNLOAD_SEM:
+      async with async_session_factory() as s:
         try:
             t = (await s.execute(select(BookImportTask).where(BookImportTask.id == task_id))).scalar_one()
             d = (await s.execute(select(Document).where(Document.id == doc_id))).scalar_one()
             t.status = "downloading"
             t.progress = 10
+            d.processing_step = "搜索下载源"
             await s.commit()
 
             stored_name = f"{uuid.uuid4().hex}.pdf"
             file_path = settings.UPLOAD_DIR / stored_name
-            content = None
             _ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
             if md5:
                 from urllib.parse import quote as _quote
 
-                _log.info(f"[BookImport] 下载 md5={md5} source={book_source}")
-                content = await _try_download_pdf(md5, _ua, _log, _httpx, _re, _quote, book_source=book_source)
+                _log.info(f"[BookImport] 流式下载 md5={md5} source={book_source}")
+                d.processing_step = "正在下载 PDF"
+                await s.commit()
 
-                if content:
+                ok = await _try_download_pdf_to_file(
+                    md5, file_path, _ua, _log, _httpx, _re, _quote,
+                    book_source=book_source,
+                )
+
+                if ok:
                     t.progress = 80
+                    d.processing_step = "下载完成，准备处理"
                     await s.commit()
                 else:
                     raise ValueError(
                         f"该书籍暂不支持自动下载（md5={md5}），请手动上传 PDF"
                     )
             else:
-                _log.info(f"[BookImport] 直接下载: url={t.download_url}")
-                # 流式下载，避免超大书籍撑爆内存
-                _chunk = settings.CHUNK_SIZE_MB * 1024 * 1024
+                _log.info(f"[BookImport] 直接流式下载: url={t.download_url}")
+                d.processing_step = "正在下载 PDF"
+                await s.commit()
                 _max = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
                 _total = 0
                 _header_bytes = b""
-                import asyncio as _aio
-                _loop = _aio.get_event_loop()
                 async with _httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
                     async with client.stream("GET", t.download_url, headers={"User-Agent": _ua}) as resp:
                         resp.raise_for_status()
                         with open(file_path, "wb") as f:
-                            async for _ck in resp.aiter_bytes(_chunk):
+                            async for _ck in resp.aiter_bytes(_STREAM_CHUNK):
                                 if not _header_bytes and len(_ck) >= 5:
                                     _header_bytes = _ck[:5]
                                 _total += len(_ck)
                                 if _total > _max:
                                     file_path.unlink(missing_ok=True)
                                     raise ValueError(f"书籍文件超过大小限制 {settings.MAX_UPLOAD_SIZE_MB} MB")
-                                await _loop.run_in_executor(None, f.write, _ck)
-                content = None  # 已写磁盘，不再需要内存中的 content
-
-            if content is not None:
-                # md5 下载方式仍返回 bytes，走原有验证逻辑
-                if not content[:5].startswith(b"%PDF"):
-                    raise ValueError(
-                        f"文件头不是 PDF 格式（前4字节: {content[:4]!r}，size: {len(content)}）"
-                    )
-                with open(file_path, "wb") as f:
-                    f.write(content)
-                file_size = len(content)
-            else:
-                # 流式下载：用已读取的头部验证 PDF 格式
+                                f.write(_ck)
                 if _header_bytes and not _header_bytes.startswith(b"%PDF"):
                     file_path.unlink(missing_ok=True)
                     raise ValueError(f"文件头不是 PDF 格式（前5字节: {_header_bytes!r}）")
-                file_size = _total
 
+            file_size = file_path.stat().st_size
             _log.info(f"[BookImport] 下载完成: task={task_id}, size={file_size}, path={file_path}")
             d.file_path = str(file_path)
             d.file_size = file_size
             d.status = "pending"
+            d.processing_step = "下载完成，排队等待 AI 处理"
             t.status = "processing"
             t.progress = 50
             await s.commit()
@@ -803,6 +828,19 @@ async def retry_download(
         data={"task_id": task_id, "document_id": doc_id},
         msg="正在重新下载 PDF，请稍候..."
     )
+
+
+@documents_static_router.get("/zlib-status", response_model=ApiResponse)
+async def zlib_status(
+    user: User = Depends(get_current_user),
+):
+    """查询 Z-Library 凭据与会话状态"""
+    from app.services.zlib_service import _cred_store
+    return ApiResponse.ok(data={
+        "configured": _cred_store.has_credentials,
+        "session_valid": _cred_store.has_valid_session,
+        "login_blocked": _cred_store.login_useless,
+    })
 
 
 @documents_static_router.get("/check-isbn/{isbn}", response_model=ApiResponse)

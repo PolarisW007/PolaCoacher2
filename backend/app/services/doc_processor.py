@@ -1,11 +1,18 @@
 """
 文档处理服务 — 异步后台处理文档解析+AI增强+讲解生成
+
+分批策略（5MB 单元）：
+  - 全局文档处理信号量限制同时处理的文档数（默认 2）
+  - 讲解生成分批，每批 SLIDE_BATCH_SIZE 个 slide
+  - 场景图分批创建 task，避免一次性创建 30+ 协程
 """
 import asyncio
+import gc
 import logging
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.document import Document
 from app.services.ai_service import (
@@ -28,10 +35,13 @@ from app.services.content_service import (
 
 logger = logging.getLogger(__name__)
 
+# ── 全局并发控制（防止多文档同时处理撑爆内存/IO）──
+_PROCESS_SEM = asyncio.Semaphore(settings.PROCESS_CONCURRENCY)
 
 # 每批合并的 PDF 页数：控制全文字符串内存峰值，大文件防 OOM
 _PDF_BATCH_PAGES = 30   # 每 30 PDF 页合并一次全文，不超过 ~1.5MB 文本
 _FULL_TEXT_MAX_CHARS = 80_000   # 传给 AI 的全文最多 8 万字符
+_SLIDE_BATCH = settings.SLIDE_BATCH_SIZE  # 讲解生成每批 slide 数
 
 
 def _extract_text_from_pdf(file_path: str) -> tuple[str, int, list[str]]:
@@ -142,7 +152,14 @@ async def process_document(doc_id: int) -> None:
     """
     异步处理文档（上传后自动触发）：
     1. 解析文本  2. 生成摘要  3. 关键知识点  4. PPT 内容
+
+    全局信号量限制同时处理文档数，防止多用户同时上传大 PDF 导致 OOM。
     """
+    async with _PROCESS_SEM:
+        await _process_document_impl(doc_id)
+
+
+async def _process_document_impl(doc_id: int) -> None:
     async with async_session_factory() as db:
         try:
             result = await db.execute(select(Document).where(Document.id == doc_id))
@@ -180,7 +197,6 @@ async def process_document(doc_id: int) -> None:
             doc.processing_step = "生成摘要与知识点"
             await db.commit()
 
-            # PPT 页数上限：避免超大文档生成几百张 slide 把内存打满
             MAX_SLIDES = 30
             effective_page_count = min(page_count, MAX_SLIDES)
 
@@ -215,8 +231,7 @@ async def process_document(doc_id: int) -> None:
             doc.processing_step = "生成讲解"
             await db.commit()
 
-            logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本")
-            # page_texts 截断到 slide 数量，防止列表过长
+            logger.info(f"[Doc {doc_id}] Step 5: 生成讲解文本（分批，每批 {_SLIDE_BATCH} 页）")
             slides = await _generate_all_lectures(
                 ppt_content,
                 page_texts[:MAX_SLIDES],
@@ -234,7 +249,6 @@ async def process_document(doc_id: int) -> None:
 
             asyncio.create_task(_pregenerate_audio(doc_id, min(3, len(slides))))
             asyncio.create_task(_generate_cover_for_doc(doc_id))
-            # 异步提取结构化内容 + 自动翻译
             asyncio.create_task(_extract_and_translate(doc_id, doc.file_path, doc.file_type))
 
         except Exception as e:
@@ -246,7 +260,6 @@ async def process_document(doc_id: int) -> None:
                     doc.status = "error"
                     doc.progress = 0
                     doc.processing_step = None
-                    # 保存友好的错误原因
                     err_str = str(e)
                     if "API" in err_str or "timeout" in err_str.lower() or "connect" in err_str.lower():
                         doc.error_detail = f"AI服务调用失败（网络超时或API异常），可稍后重新处理。详情：{err_str[:200]}"
@@ -319,8 +332,12 @@ async def _generate_all_lectures(
     doc_type: str = "science_pop",
     ip_info: dict | None = None,
 ) -> list[dict]:
-    """为每页 PPT 并行生成讲解文本 + 翻译（场景图异步后台生成）"""
-    sem = asyncio.Semaphore(2)  # 降低并发，防止大文档处理时内存压力过大
+    """分批为每页 PPT 生成讲解文本 + 翻译，每批 _SLIDE_BATCH 个 slide。
+    批间持久化到数据库，避免一次性创建所有协程占用内存。
+    """
+    sem = asyncio.Semaphore(2)
+    total = len(ppt_content)
+    slides: list[dict] = []
 
     async def _one_slide(idx: int, slide: dict) -> dict:
         async with sem:
@@ -337,30 +354,48 @@ async def _generate_all_lectures(
                 "translation": translation,
                 "page_text": page_text[:500],
                 "doc_type": doc_type,
-                "scene_image_url": None,  # 图片异步后台生成后写入
+                "scene_image_url": None,
             }
 
-    tasks = [_one_slide(i, s) for i, s in enumerate(ppt_content)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for batch_start in range(0, total, _SLIDE_BATCH):
+        batch_end = min(batch_start + _SLIDE_BATCH, total)
+        batch = ppt_content[batch_start:batch_end]
 
-    slides = []
-    for i, r in enumerate(results):
-        if isinstance(r, Exception):
-            logger.error(f"Slide {i + 1} 生成失败: {r}")
-            slides.append({
-                "slide": i + 1,
-                "title": ppt_content[i].get("title", f"第 {i + 1} 页"),
-                "points": ppt_content[i].get("points", []),
-                "lecture_text": "讲解生成失败，请重试。",
-                "translation": "",
-                "page_text": "",
-                "doc_type": doc_type,
-                "scene_image_url": None,
-            })
-        else:
-            slides.append(r)
+        tasks = [_one_slide(batch_start + i, s) for i, s in enumerate(batch)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 触发场景图后台生成（不阻塞讲解返回）
+        for i, r in enumerate(results):
+            abs_idx = batch_start + i
+            if isinstance(r, Exception):
+                logger.error(f"Slide {abs_idx + 1} 生成失败: {r}")
+                slides.append({
+                    "slide": abs_idx + 1,
+                    "title": ppt_content[abs_idx].get("title", f"第 {abs_idx + 1} 页"),
+                    "points": ppt_content[abs_idx].get("points", []),
+                    "lecture_text": "讲解生成失败，请重试。",
+                    "translation": "",
+                    "page_text": "",
+                    "doc_type": doc_type,
+                    "scene_image_url": None,
+                })
+            else:
+                slides.append(r)
+
+        # 每批完成后持久化进度到数据库
+        if doc_id is not None:
+            try:
+                async with async_session_factory() as _db:
+                    _r = await _db.execute(select(Document).where(Document.id == doc_id))
+                    _doc = _r.scalar_one_or_none()
+                    if _doc:
+                        _doc.lecture_slides = slides
+                        await _db.commit()
+            except Exception:
+                pass
+
+        logger.info(f"[Doc {doc_id}] 讲解进度 {batch_end}/{total}")
+        gc.collect()
+
     if doc_id is not None:
         asyncio.create_task(_generate_all_slide_images(doc_id, slides, doc_type=doc_type, ip_info=ip_info))
 
@@ -373,10 +408,9 @@ async def _generate_all_slide_images(
     doc_type: str = "science_pop",
     ip_info: dict | None = None,
 ) -> None:
-    """后台为所有讲解页生成场景图，逐页写回数据库"""
-    # 等待 5 分钟再开始生成，避免与讲解生成/TTS 同时抢占资源
+    """后台分批为所有讲解页生成场景图，逐页写回数据库"""
     await asyncio.sleep(300)
-    sem = asyncio.Semaphore(1)  # 控制并发，一次只生成一张，避免内存爆炸
+    sem = asyncio.Semaphore(1)
     total = len(slides)
 
     async def _gen_one(idx: int, slide: dict) -> None:
@@ -384,7 +418,6 @@ async def _generate_all_slide_images(
             title = slide.get("title", "")
             points = slide.get("points", [])
             lecture_text = slide.get("lecture_text", "")
-            # 优先使用 slide 自带的 doc_type（兼容旧数据），否则用参数传入
             effective_doc_type = slide.get("doc_type") or doc_type
             try:
                 url = await generate_slide_scene_image(
@@ -398,8 +431,12 @@ async def _generate_all_slide_images(
             except Exception as e:
                 logger.error(f"[Doc {doc_id}] Slide {idx} 场景图生成失败: {e}")
 
-    logger.info(f"[Doc {doc_id}] 开始后台生成 {total} 张场景图 (类型={doc_type})")
-    await asyncio.gather(*[_gen_one(i, s) for i, s in enumerate(slides)])
+    logger.info(f"[Doc {doc_id}] 开始后台分批生成 {total} 张场景图 (类型={doc_type})")
+    for batch_start in range(0, total, _SLIDE_BATCH):
+        batch = slides[batch_start:batch_start + _SLIDE_BATCH]
+        await asyncio.gather(*[_gen_one(batch_start + i, s) for i, s in enumerate(batch)])
+        gc.collect()
+        logger.info(f"[Doc {doc_id}] 场景图进度 {min(batch_start + _SLIDE_BATCH, total)}/{total}")
     logger.info(f"[Doc {doc_id}] 全部场景图生成完成")
 
 

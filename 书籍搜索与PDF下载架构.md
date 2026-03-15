@@ -368,17 +368,17 @@ if not doc.file_path or not os.path.exists(doc.file_path):
 
 排查 `ReadingHistory` 模型的写入逻辑，可能是字段类型不匹配或并发写入冲突。
 
-### 10.2 稳定性提升（P1）
+### 10.2 稳定性提升（P1）— ✅ 已完成
 
-- 代理增加重试（当前仅单次尝试）
-- 搜索超时从 30s 调整为可配置
-- 下载策略增加更多 Libgen 镜像
+- ✅ 代理增加重试（每个代理 URL 最多重试 2 次，退避 1s/3s）+ 新增 cors.lol 代理
+- ✅ 搜索超时改为可配置 `SEARCH_TIMEOUT`（config.py）
+- ✅ 下载策略新增 `libgen.is`、`libgen.gs` 两个镜像（共 6 个镜像）
 
-### 10.3 体验优化（P2）
+### 10.3 体验优化（P2）— ✅ 已完成
 
-- 搜索结果预标记扫描版（若 Anna's Archive 提供元数据）
-- 导入进度细分：下载中 → AI 提取中 → 生成讲解中 → 完成
-- ZLib 凭据状态展示在设置页
+- ⏳ 搜索结果预标记扫描版（Anna's Archive 暂无可靠元数据，待后续支持）
+- ✅ 导入进度细分：搜索下载源 → 正在下载 → 下载完成 → AI 处理各步骤
+- ✅ ZLib 凭据状态展示：`/zlib-status` API + 搜索弹窗顶部状态栏
 
 ---
 
@@ -409,3 +409,356 @@ frontend/src/
     └── bookshelf/
         └── BookshelfPage.jsx    ← 书架页 + 搜索弹窗 + 导入交互
 ```
+
+---
+
+## 十二、大 PDF 分批加载与生成策略
+
+> 设计目标：以 **5MB** 为基本单元，避免大文件（50MB+）在下载、解析、AI 生成任何阶段把服务器 IO/内存打满导致挂掉。
+
+### 12.1 当前风险分析
+
+#### IO/内存风险点（按严重程度排序）
+
+| 风险等级 | 环节 | 函数 | 问题 |
+|---------|------|------|------|
+| 🔴 **高** | PDF 下载 | `_try_download_pdf` / `download_zlib_book` | `resp.content` 整个 PDF 一次性读入内存（100MB PDF = 100MB 内存） |
+| 🔴 **高** | 文本提取 | `_extract_text_from_pdf` | pdfplumber/pypdf 全量加载 PDF，`text_parts` 无上限 |
+| 🔴 **高** | 结构化提取 | `_extract_with_pymupdf` | 全量加载 + 逐页提取图片，大图 `img_bytes` 全驻留内存 |
+| 🔴 **高** | 文档处理 | `process_document` | 无全局并发限制，多文档同时处理时内存叠加 |
+| 🟡 **中** | 讲解生成 | `_generate_all_lectures` | Semaphore(2) 但一次创建所有 30+ 个 task |
+| 🟡 **中** | 场景图 | `_call_wanx_image` | 图片 `img_resp.content` 全量读入（约 0.5-2MB/张） |
+| 🟢 **低** | 文件上传 | `_stream_to_disk` | 已实现流式写入，50MB 分块 |
+
+#### 当前并发控制（不足）
+
+| 模块 | 当前限制 | 问题 |
+|------|---------|------|
+| `process_document` 整体 | **无限制** | 5 个用户同时上传 = 5 个大 PDF 并发处理 |
+| PDF 下载 | **无限制** | 多个 book_import 可同时下载 |
+| 讲解生成 | Semaphore(2) | 仅限单文档内，跨文档无限制 |
+| 场景图生成 | Semaphore(1) | 同上 |
+| 翻译 | Semaphore(3) | 同上 |
+| 结构化提取 | **无限制** | 与 process_document 并行执行 |
+
+---
+
+### 12.2 分批策略设计（5MB 单元）
+
+#### 核心原则
+
+```
+1. 下载阶段：流式写入，内存中最多保留 5MB
+2. 解析阶段：分页批处理，每批累积文本不超过 5MB
+3. AI 生成阶段：分批提交，每批 5 个 slide
+4. 全局并发：同时处理的文档数 ≤ 2
+```
+
+---
+
+#### A. 下载阶段 — 流式写入磁盘
+
+**当前问题**：`_try_download_pdf` 返回 `bytes`（整个文件在内存），`download_zlib_book` 同理。
+
+**改造方案**：
+
+```python
+# ── 改造前 ──
+async def _try_download_pdf(md5, ...) -> bytes | None:
+    resp = await client.get(url)
+    return resp.content  # 100MB 全部在内存
+
+# ── 改造后 ──
+STREAM_CHUNK = 5 * 1024 * 1024  # 5MB
+
+async def _try_download_pdf_to_file(md5, save_path, ...) -> bool:
+    """流式下载 PDF 到磁盘，内存峰值 ≤ 5MB"""
+    async with client.stream("GET", url) as resp:
+        if resp.status_code != 200:
+            return False
+        total = 0
+        with open(save_path, "wb") as f:
+            async for chunk in resp.aiter_bytes(STREAM_CHUNK):
+                f.write(chunk)
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_SIZE:  # 200MB 上限
+                    raise ValueError("文件过大")
+    # 验证 %PDF 头
+    with open(save_path, "rb") as f:
+        if not f.read(5).startswith(b"%PDF"):
+            os.remove(save_path)
+            return False
+    return True
+```
+
+**涉及修改**：
+- `documents.py`: `_try_download_pdf` → `_try_download_pdf_to_file`
+- `documents.py`: `_download_and_process_pdf` 调用方式
+- `zlib_service.py`: `download_zlib_book` → `download_zlib_book_to_file`
+
+---
+
+#### B. 文本提取阶段 — 分页批处理
+
+**当前问题**：`pdfplumber.open()` 一次性加载整份 PDF 的结构到内存。
+
+**改造方案**：
+
+```python
+_BATCH_PAGES = 20          # 每批处理 20 页
+_TEXT_BATCH_MAX = 5 * 1024 * 1024  # 每批文本累积上限 5MB
+
+def _extract_text_from_pdf(file_path: str) -> tuple[str, int, list[str]]:
+    """分批提取 PDF 文本，避免全量驻留内存"""
+    import fitz
+    doc = fitz.open(file_path)
+    page_count = doc.page_count
+    text_parts = []
+    
+    for batch_start in range(0, page_count, _BATCH_PAGES):
+        batch_end = min(batch_start + _BATCH_PAGES, page_count)
+        batch_text_size = 0
+        
+        for i in range(batch_start, batch_end):
+            page = doc.load_page(i)
+            page_text = page.get_text()
+            text_parts.append(page_text)
+            batch_text_size += len(page_text.encode("utf-8"))
+            page = None  # 释放页面对象
+            
+            if batch_text_size > _TEXT_BATCH_MAX:
+                break  # 当前批次文本量已达上限
+        
+        # 显式触发 GC，释放已处理页面的内存
+        import gc; gc.collect()
+    
+    doc.close()
+    full_text = "\n".join(text_parts)[:_FULL_TEXT_MAX_CHARS]
+    return full_text, page_count, text_parts
+```
+
+**关键改动**：
+- 使用 `fitz`（PyMuPDF）的 `load_page(i)` 逐页加载替代全量打开
+- 每批处理 20 页后触发 GC
+- 单批文本累积超过 5MB 时截断
+
+---
+
+#### C. 结构化提取 — 图片分批 + 大小限制
+
+**当前问题**：`_extract_with_pymupdf` 对每页的每张图片 `doc.extract_image(xref)` 一次性读入 `img_bytes`。
+
+**改造方案**：
+
+```python
+_MAX_IMAGE_SIZE = 5 * 1024 * 1024    # 单张图片上限 5MB
+_MAX_IMAGES_PER_DOC = 50              # 全文档图片上限 50 张
+_MAX_IMAGE_TOTAL_BYTES = 50 * 1024 * 1024  # 总图片上限 50MB
+
+async def _extract_images_batch(doc, page_indices, save_dir, ...):
+    """分批提取图片，跳过过大的图片"""
+    saved_count = 0
+    total_bytes = 0
+    
+    for page_idx in page_indices:
+        page = doc.load_page(page_idx)
+        images = page.get_images(full=True)
+        
+        for img_info in images:
+            if saved_count >= _MAX_IMAGES_PER_DOC:
+                return saved_count
+            
+            xref = img_info[0]
+            img_data = doc.extract_image(xref)
+            img_bytes = img_data["image"]
+            
+            # 跳过过大的图片
+            if len(img_bytes) > _MAX_IMAGE_SIZE:
+                continue
+            
+            total_bytes += len(img_bytes)
+            if total_bytes > _MAX_IMAGE_TOTAL_BYTES:
+                return saved_count
+            
+            # 写入磁盘后立即释放
+            img_path = f"{save_dir}/img_{page_idx}_{saved_count}.png"
+            with open(img_path, "wb") as f:
+                f.write(img_bytes)
+            del img_bytes
+            saved_count += 1
+        
+        page = None
+    
+    return saved_count
+```
+
+---
+
+#### D. AI 生成阶段 — 分批 Slide 处理
+
+**当前问题**：`_generate_all_lectures` 一次创建所有 slide 的 task（可能 30+），虽有 Semaphore(2) 但协程对象全部在内存。
+
+**改造方案**：
+
+```python
+_SLIDE_BATCH = 5  # 每批处理 5 个 slide
+
+async def _generate_all_lectures(doc_id, slides, ...):
+    """分批生成讲解，每批 5 个 slide"""
+    sem = asyncio.Semaphore(2)
+    total = len(slides)
+    
+    for batch_start in range(0, total, _SLIDE_BATCH):
+        batch = slides[batch_start : batch_start + _SLIDE_BATCH]
+        
+        async def _gen(slide, idx):
+            async with sem:
+                # 生成讲解文本 + 翻译
+                ...
+        
+        tasks = [_gen(s, batch_start + i) for i, s in enumerate(batch)]
+        await asyncio.gather(*tasks)
+        
+        # 每批完成后持久化到数据库，释放内存
+        async with async_session_factory() as db:
+            doc = await db.get(Document, doc_id)
+            doc.lecture_slides = slides  # 保存进度
+            await db.commit()
+        
+        logger.info(f"[Doc {doc_id}] 讲解进度 {min(batch_start + _SLIDE_BATCH, total)}/{total}")
+```
+
+**同样适用于**：
+- `_generate_all_slide_images`：已经是 Semaphore(1)，但也应分批创建 task
+- `_pregenerate_audio`：已串行，无需改动
+
+---
+
+#### E. 全局并发控制 — 文档处理队列
+
+**当前问题**：`asyncio.create_task(process_document(doc_id))` 无限制，5 个用户同时上传 = 5 个大文档并发处理。
+
+**改造方案**：
+
+```python
+# 在 doc_processor.py 顶部添加全局信号量
+_PROCESS_SEM = asyncio.Semaphore(2)  # 全局最多同时处理 2 个文档
+
+async def process_document(doc_id: int):
+    """带全局并发控制的文档处理入口"""
+    async with _PROCESS_SEM:
+        await _process_document_impl(doc_id)
+
+# 下载也需要全局限制
+_DOWNLOAD_SEM = asyncio.Semaphore(2)  # 全局最多同时下载 2 个文件
+
+async def _download_and_process_pdf(task_id, doc_id, md5, book_source):
+    async with _DOWNLOAD_SEM:
+        await _download_and_process_pdf_impl(...)
+```
+
+---
+
+### 12.3 完整分批处理流程
+
+```
+用户上传/导入 PDF（可能 100MB+）
+        │
+        ▼
+┌─ 全局下载信号量 (max=2) ──────────────────────────────┐
+│                                                        │
+│  流式下载，5MB 分块写入磁盘                             │
+│  内存峰值: ≤ 5MB                                       │
+│  下载完成后验证 %PDF 头                                  │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─ 全局处理信号量 (max=2) ──────────────────────────────┐
+│                                                        │
+│  Step 1: 文本提取（分页批处理）                          │
+│    ├── 每 20 页为一批                                    │
+│    ├── 每批文本累积 ≤ 5MB 时截断                         │
+│    ├── 批间 gc.collect() 释放内存                        │
+│    └── 内存峰值: ≤ 当前批 20 页的文本 + PDF 页面结构      │
+│                                                        │
+│  Step 2: AI 摘要 + 关键点（单次调用，文本已截断 80K）     │
+│    └── 内存峰值: ≤ 请求体 ~100KB                        │
+│                                                        │
+│  Step 3: 文档类型识别（单次调用）                        │
+│    └── 内存峰值: ≤ 请求体 ~10KB                         │
+│                                                        │
+│  Step 4: PPT/讲解 Slides 生成（单次调用）                │
+│    └── 内存峰值: ≤ 请求体 ~100KB                        │
+│                                                        │
+│  Step 5: 讲解文本 + TTS（分批，每批 5 个 slide）          │
+│    ├── 每批 5 个 slide × Semaphore(2) = 同时 2 个 AI 调用 │
+│    ├── 批间持久化到数据库                                 │
+│    └── 内存峰值: ≤ 5 个 slide 的讲解文本 ~50KB            │
+│                                                        │
+│  Step 6: 结构化提取（分页 + 图片限制）                    │
+│    ├── 单张图片 > 5MB → 跳过                             │
+│    ├── 全文档图片总量 > 50MB → 停止提取                   │
+│    ├── 最多提取 50 张图片                                 │
+│    └── 内存峰值: ≤ 单张图片 5MB + 页面结构                │
+│                                                        │
+│  Step 7: 场景图生成（Semaphore(1)，5 分钟延迟）           │
+│    ├── 逐张生成，分批创建 task                            │
+│    └── 内存峰值: ≤ 单张图片 ~2MB                         │
+│                                                        │
+│  Step 8: 封面图生成（单次）                              │
+│    └── 内存峰值: ≤ ~2MB                                 │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+        │
+        ▼
+  status = "ready" ✅
+  全程内存峰值控制在 ≤ 20MB（单文档）
+```
+
+---
+
+### 12.4 代码修改清单
+
+| 文件 | 修改内容 | 优先级 | 状态 |
+|------|---------|--------|------|
+| `config.py` | 新增分批处理配置常量 | P0 | ✅ 已完成 |
+| `documents.py` | `_try_download_pdf` → `_try_download_pdf_to_file` 流式写入磁盘 | P0 | ✅ 已完成 |
+| `documents.py` | `_download_and_process_pdf` 加全局下载信号量 `_DOWNLOAD_SEM` | P0 | ✅ 已完成 |
+| `zlib_service.py` | 新增 `download_zlib_book_to_file` 流式版本 | P0 | ✅ 已完成 |
+| `doc_processor.py` | 顶部添加 `_PROCESS_SEM = Semaphore(2)` 全局处理信号量 | P0 | ✅ 已完成 |
+| `doc_processor.py` | `_generate_all_lectures` 分批 5 个 slide + 批间持久化 | P1 | ✅ 已完成 |
+| `doc_processor.py` | `_generate_all_slide_images` 分批创建 task | P1 | ✅ 已完成 |
+| `content_service.py` | `_extract_with_pymupdf` 图片大小/数量/总量限制 | P1 | ✅ 已完成 |
+| `content_service.py` | `_extract_structured_plain` 加 `f.read()` 上限 2MB | P1 | ✅ 已完成 |
+| `ai_service.py` | `_call_wanx_image` 图片流式写入 | P2 | ✅ 已完成 |
+
+### 12.5 配置常量（建议添加到 config.py）
+
+```python
+# ── 分批处理配置 ──────────────────────────────
+STREAM_CHUNK_SIZE = 5 * 1024 * 1024      # 下载/读取分块大小：5MB
+MAX_DOWNLOAD_SIZE_MB = 200               # 单文件下载上限：200MB
+
+PROCESS_CONCURRENCY = 2                  # 全局同时处理文档数
+DOWNLOAD_CONCURRENCY = 2                 # 全局同时下载数
+
+TEXT_EXTRACT_BATCH_PAGES = 20            # 文本提取每批页数
+TEXT_BATCH_MAX_BYTES = 5 * 1024 * 1024   # 每批文本累积上限：5MB
+
+SLIDE_BATCH_SIZE = 5                     # 讲解生成每批 slide 数
+
+MAX_IMAGE_SIZE = 5 * 1024 * 1024         # 单张图片上限：5MB
+MAX_IMAGES_PER_DOC = 50                  # 全文档图片上限：50 张
+MAX_IMAGE_TOTAL_BYTES = 50 * 1024 * 1024 # 全文档图片总量上限：50MB
+```
+
+### 12.6 预期效果
+
+| 指标 | 改造前 | 改造后 |
+|------|--------|--------|
+| 下载 100MB PDF 内存峰值 | ~100MB | ≤ 5MB |
+| 提取 500 页 PDF 内存 | ~50MB（全量文本） | ≤ 10MB（20页/批） |
+| 5 个文档同时处理 | 5× 内存叠加，可能 OOM | 排队处理，最多 2× |
+| 大图提取 | 无上限，可能 OOM | 单张 ≤ 5MB，总量 ≤ 50MB |
+| 30 个 slide 讲解生成 | 30 个协程同时创建 | 分 6 批，每批 5 个 |
