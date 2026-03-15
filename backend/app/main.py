@@ -93,33 +93,75 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logging.error(f"音频清理异常: {e}")
 
-    # 启动时恢复异常中断的 importing/processing 文档状态
     async def _recover_stuck_docs():
-        """服务重启后将长时间卡在 importing/processing 的文档重置为 error，避免永久卡死。"""
-        import datetime
-        from sqlalchemy import select as _sel, update as _upd
+        """
+        服务重启后恢复被中断的文档：
+        - processing 状态：后台任务已随进程死亡，有文件则重新排队处理，无文件则报错
+        - importing 状态超过 30 分钟：视为卡死，重置为 error
+        """
+        import datetime, os
+        from sqlalchemy import select as _sel
         from app.core.database import async_session_factory
         from app.models.document import Document
-        STUCK_MINUTES = 30  # 超过30分钟仍在中间状态视为卡死
+        from app.services.doc_processor import process_document
+
         try:
             async with async_session_factory() as _s:
-                cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=STUCK_MINUTES)
                 result = await _s.execute(
                     _sel(Document).where(
-                        Document.status.in_(["importing", "processing"]),
-                        Document.updated_at < cutoff,
+                        Document.status.in_(["processing", "pending", "importing"]),
                     )
                 )
-                stuck = result.scalars().all()
-                for _d in stuck:
-                    logging.warning(f"[Startup] 重置卡死文档 id={_d.id} title={_d.title!r} status={_d.status}")
-                    _d.status = "error"
-                    _d.error_detail = f"上次处理（{_d.status}）被中断（服务重启或超时），请点击重新处理。"
-                    _d.progress = 0
-                    _d.processing_step = None
+                docs = result.scalars().all()
+                requeued = 0
+                for _d in docs:
+                    has_file = bool(_d.file_path) and os.path.exists(_d.file_path) and os.path.getsize(_d.file_path) > 1024
+
+                    if _d.status == "processing":
+                        if has_file:
+                            logging.info(f"[Startup] 重新排队 id={_d.id} title={_d.title!r} (processing → pending)")
+                            _d.status = "pending"
+                            _d.progress = 0
+                            _d.processing_step = "服务重启，重新排队"
+                            requeued += 1
+                        else:
+                            _d.status = "error"
+                            _d.progress = 0
+                            _d.processing_step = None
+                            _d.error_detail = "处理被中断且文件缺失，请重新上传或下载。"
+
+                    elif _d.status == "pending":
+                        if has_file and not _d.ppt_content:
+                            logging.info(f"[Startup] 未处理的 pending 文档，排队 id={_d.id} title={_d.title!r}")
+                            _d.processing_step = "服务重启，重新排队"
+                            requeued += 1
+
+                    elif _d.status == "importing":
+                        updated = _d.updated_at
+                        if updated and (datetime.datetime.utcnow() - updated).total_seconds() > 1800:
+                            if has_file:
+                                logging.info(f"[Startup] 卡死导入有文件，重新处理 id={_d.id}")
+                                _d.status = "pending"
+                                _d.progress = 0
+                                _d.processing_step = "服务重启，重新排队"
+                                requeued += 1
+                            else:
+                                logging.warning(f"[Startup] 卡死导入无文件 id={_d.id}")
+                                _d.status = "error"
+                                _d.progress = 0
+                                _d.processing_step = None
+                                _d.error_detail = "下载被中断（服务重启或超时），请点击重新处理。"
+
                 await _s.commit()
-                if stuck:
-                    logging.info(f"[Startup] 共重置 {len(stuck)} 个卡死文档")
+
+                if requeued:
+                    result2 = await _s.execute(
+                        _sel(Document).where(Document.status == "pending", Document.processing_step == "服务重启，重新排队")
+                    )
+                    for _d2 in result2.scalars().all():
+                        logging.info(f"[Startup] 启动处理 id={_d2.id}")
+                        asyncio.create_task(process_document(_d2.id))
+                    logging.info(f"[Startup] 共恢复 {requeued} 个中断文档")
         except Exception as _e:
             logging.error(f"[Startup] 恢复卡死文档失败: {_e}")
 

@@ -1175,7 +1175,20 @@ export default function DocumentReaderPage() {
             <>
               <Spin size="large" />
               <Text style={{ color: bgConfig.text }}>AI 正在处理文档，完成后自动加载流式内容...</Text>
-              <Text type="secondary">进度：{Math.round(doc?.progress || 0)}%</Text>
+              <Text type="secondary">进度：{Math.round(doc?.progress || 0)}%{doc?.processing_step ? ` — ${doc.processing_step}` : ''}</Text>
+            </>
+          ) : doc?.status === 'importing' ? (
+            <>
+              <Spin size="large" />
+              <Text style={{ color: bgConfig.text }}>PDF 正在下载中，请返回书架等待</Text>
+              <Text type="secondary">{doc?.processing_step || '正在从书库下载...'}</Text>
+              <Button type="primary" onClick={() => navigate('/')}>返回书架</Button>
+            </>
+          ) : doc?.status === 'error' || doc?.status === 'pending_upload' ? (
+            <>
+              <FileTextOutlined style={{ fontSize: 48, color: '#ff4d4f' }} />
+              <Text style={{ color: bgConfig.text }}>{doc?.error_detail || '文档处理失败'}</Text>
+              <Button type="primary" onClick={() => navigate('/')}>返回书架</Button>
             </>
           ) : (
             <>

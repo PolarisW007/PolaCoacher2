@@ -169,6 +169,10 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
       onSelect?.(doc.id);
     } else if (doc.status === 'pending_upload') {
       message.info('请先上传 PDF 文件');
+    } else if (doc.status === 'importing') {
+      message.info('PDF 正在下载中，请等待下载完成');
+    } else if (doc.status === 'processing' || doc.status === 'pending') {
+      message.info('文档正在处理中，请稍候');
     } else if (doc.status === 'ready' && doc.lecture_slides?.length > 0) {
       navigate(`/study/${doc.id}`);
     } else {
@@ -321,12 +325,11 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
             </Text>
           )}
           {(doc.status === 'pending' || doc.status === 'importing') && (() => {
-            // 判断是否超时卡死（前端保守估计：updated_at 超过 10 分钟仍在中间状态）
             const updatedAt = doc.updated_at ? new Date(doc.updated_at) : null;
             const stuckMinutes = updatedAt ? (Date.now() - updatedAt.getTime()) / 60000 : 0;
             const isStuck = stuckMinutes > 10;
             return (
-              <div style={{ marginTop: 4 }}>
+              <div style={{ marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
                 {isStuck && doc.status === 'importing' && (
                   <div style={{
                     fontSize: 11, color: '#fa8c16', background: '#fff7e6',
@@ -343,8 +346,9 @@ function DocCard({ doc, onRefresh, selectable, selected, onSelect, groups, onMov
                   style={{ padding: 0, fontSize: 11, color: isStuck ? '#ff4d4f' : undefined }}
                   onClick={(e) => {
                     e.stopPropagation();
+                    e.preventDefault();
                     docApi.reprocess(doc.id).then(() => {
-                      message.success('已重新启动处理');
+                      message.success('已重新启动下载，请稍候');
                       onRefresh?.();
                     }).catch((err) => {
                       const detail = err.response?.data?.detail || err.message || '重新处理失败';

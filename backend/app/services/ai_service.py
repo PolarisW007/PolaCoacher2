@@ -111,6 +111,17 @@ async def generate_ppt_content(text: str, page_count: int) -> list[dict]:
         return [{"slide": 1, "title": "文档概述", "points": [result[:300]]}]
 
 
+def _flatten_points(points: list) -> str:
+    """将 points 安全展平为逗号分隔字符串（AI 有时返回嵌套列表）"""
+    flat = []
+    for p in points:
+        if isinstance(p, list):
+            flat.extend(str(x) for x in p)
+        else:
+            flat.append(str(p))
+    return ", ".join(flat)
+
+
 async def generate_lecture_text(slide_content: dict, page_text: str) -> str:
     """为单页生成讲解文本"""
     title = slide_content.get("title", "")
@@ -118,7 +129,7 @@ async def generate_lecture_text(slide_content: dict, page_text: str) -> str:
     return await _call_qwen(
         prompt=(
             f"你正在为一个教学 PPT 做讲解。当前页标题是「{title}」，"
-            f"要点包括：{', '.join(points)}。\n"
+            f"要点包括：{_flatten_points(points)}。\n"
             f"原文参考：{page_text[:2000]}\n\n"
             f"请生成这一页的详细讲解文本（300-500字）。请直接开始阐述内容，不要使用“同学们好”或“大家好”之类的开场白，语气要自然。"
         ),
@@ -166,7 +177,7 @@ async def generate_xhs_content(summary: str, key_points: list[str]) -> dict:
     """生成小红书风格图文"""
     prompt = (
         f"基于以下文档信息，生成一篇小红书风格的图文帖子。\n"
-        f"摘要：{summary}\n关键点：{', '.join(key_points[:5])}\n\n"
+        f"摘要：{summary}\n关键点：{_flatten_points(key_points[:5])}\n\n"
         f"请输出 JSON，格式：{{'title': '标题（含 emoji）', 'content': '正文（含 emoji 和换行）', "
         f"'cover_prompt': '封面图 AI 画图提示词（英文）', "
         f"'slides': [{{'text': '幻灯片文字'}}]}}"
@@ -188,7 +199,7 @@ async def generate_moments_content(summary: str, key_points: list[str]) -> dict:
     """生成朋友圈风格文案"""
     prompt = (
         f"基于以下文档信息，生成一条朋友圈文案。\n"
-        f"摘要：{summary}\n关键点：{', '.join(key_points[:5])}\n\n"
+        f"摘要：{summary}\n关键点：{_flatten_points(key_points[:5])}\n\n"
         f"请输出 JSON，格式：{{'title': '标题', 'content': '文案（简洁有深度，150字以内）', "
         f"'cover_prompt': '配图 AI 画图提示词（英文）'}}"
     )
@@ -340,8 +351,8 @@ async def generate_image_prompt(
     ip_info: dict | None = None,
 ) -> str:
     """基于文档内容和类型生成封面/分享图的英文画图 prompt"""
-    kp_text = "\n".join(f"- {p}" for p in (key_points or [])[:8])
-    slides_text = "\n".join(f"- {p}" for p in (all_slide_points or [])[:15])
+    kp_text = "\n".join(f"- {p}" for p in _flatten_points(key_points or []).split(", ")[:8])
+    slides_text = "\n".join(f"- {p}" for p in _flatten_points(all_slide_points or []).split(", ")[:15])
 
     style_base = _DOC_TYPE_STYLE_BASE.get(doc_type, _DOC_TYPE_STYLE_BASE["science_pop"])
     if doc_type == "known_ip" and ip_info and ip_info.get("ip_visual_style"):
@@ -436,7 +447,7 @@ async def generate_cover_image(prompt: str, save_dir: str, filename: str) -> str
 # 保留旧函数签名供内部兼容调用（内部直接用 v2 实现）
 def classify_slide_style(title: str, points: list[str], lecture_text: str) -> str:
     """兼容旧调用：返回 doc_type 字符串（使用关键词粗分类）"""
-    combined = (title + " " + " ".join(points) + " " + lecture_text[:300]).lower()
+    combined = (title + " " + _flatten_points(points) + " " + lecture_text[:300]).lower()
     tech_kws = {"算法", "公式", "定理", "机器学习", "深度学习", "神经网络", "architecture", "algorithm",
                 "theorem", "transformer", "gradient", "tensor", "论文", "研究", "实验", "模型", "框架"}
     tech_score = sum(1 for kw in tech_kws if kw in combined)
@@ -479,7 +490,7 @@ async def generate_slide_scene_prompt_v2(
             f"Visual style reference: {ip_info.get('ip_visual_style', '')}. "
         )
 
-    points_str = "; ".join(slide_points[:4]) if slide_points else slide_title
+    points_str = _flatten_points(slide_points[:4]) if slide_points else slide_title
     text_snippet = lecture_text[:300]
 
     user_prompt = f"""Create an illustration prompt for an educational lecture slide.

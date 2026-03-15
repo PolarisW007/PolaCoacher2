@@ -145,6 +145,7 @@ async def record_history(
         db.add(history)
 
     await db.flush()
+    await db.refresh(history)
 
     doc_info = HistoryDocInfo(
         id=doc.id,
