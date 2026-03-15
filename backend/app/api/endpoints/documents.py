@@ -1059,7 +1059,7 @@ async def reprocess_document(
             os.remove(doc.file_path)
         except Exception:
             pass
-        doc.file_path = None
+        doc.file_path = ""
 
     # ── 检查本地文件状态 ───────────────────────────────
     file_ok = False
@@ -1121,7 +1121,7 @@ async def reprocess_document(
                 os.remove(doc.file_path)
             except Exception:
                 pass
-            doc.file_path = None
+            doc.file_path = ""
 
     # ── 文件可用 → 重跑 AI ─────────────────────────────
     if file_ok:
@@ -1146,6 +1146,8 @@ async def reprocess_document(
         )
 
     # 有 md5，启动重新下载
+    if not doc.file_path:
+        doc.file_path = ""
     doc.status = "importing"
     doc.error_detail = None
     task_result = await db.execute(
